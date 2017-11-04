@@ -1,5 +1,6 @@
 import unittest
 import across
+import struct
 from .utils import make_connection, MemoryChannel, Box
 
 
@@ -27,3 +28,57 @@ class ErrorTest(unittest.TestCase):
                 conn.close()
             except OSError:
                 pass
+
+
+class ProtocolErrorChannel(across.Channel):
+    def __init__(self, data):
+        self.__data = data
+
+    def recv(self, size):
+        data, self.__data = self.__data[:size], self.__data[size:]
+        return data
+
+    def send(self, data):
+        pass
+
+    def cancel(self):
+        pass
+
+    def close(self):
+        pass
+
+
+class ProtocolErrorTest(unittest.TestCase):
+    def __simulate_error(self, data):
+        with across.Connection(ProtocolErrorChannel(data)) as conn:
+            conn.wait()
+
+    def test_incomplete_msg_size(self):
+        with self.assertRaisesRegex(across.ProtocolError, 'Incomplete message size'):
+            self.__simulate_error(b'\0\0\0')
+
+    def test_empty_msg(self):
+        with self.assertRaisesRegex(across.ProtocolError, 'Empty message'):
+            self.__simulate_error(struct.pack('>I', 0))
+
+    def test_incomplete_msg(self):
+        with self.assertRaisesRegex(across.ProtocolError, 'Incomplete message'):
+            self.__simulate_error(struct.pack('>I', 10))
+        with self.assertRaisesRegex(across.ProtocolError, 'Incomplete message'):
+            self.__simulate_error(struct.pack('>I', 10) + b'abc')
+
+    def test_invalid_msg_type(self):
+        with self.assertRaisesRegex(across.ProtocolError, 'Invalid message type: 99'):
+            self.__simulate_error(struct.pack('>IB', 1, 99))
+
+    def test_incomplete_apply_msg(self):
+        with self.assertRaisesRegex(across.ProtocolError, 'Incomplete apply message'):
+            self.__simulate_error(struct.pack('>IB', 1 + 7, across._APPLY) + b'\0' * 7)
+
+    def test_invalid_apply_actor(self):
+        with self.assertRaisesRegex(across.ProtocolError, 'Actor not found: 404'):
+            self.__simulate_error(struct.pack('>IBQ', 1 + 8, across._APPLY, 404))
+
+    def test_incomplete_result_msg(self):
+        with self.assertRaisesRegex(across.ProtocolError, 'Incomplete result message'):
+            self.__simulate_error(struct.pack('>IB', 1 + 7, across._RESULT) + b'\0' * 7)

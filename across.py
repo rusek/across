@@ -149,6 +149,14 @@ class ConnectionLost(Exception):
     pass
 
 
+class ProtocolError(Exception):
+    pass
+
+
+_APPLY = 1
+_RESULT = 2
+
+
 class Connection:
     def __init__(self, channel):
         self.__channel = channel
@@ -227,8 +235,8 @@ class Connection:
             if self.__cancelled:
                 raise ConnectionLost
             actor = self.__get_current_actor_locked()
-            header = struct.pack('>BII', 0, actor.id ^ 1, len(payload))
-            self.__send_queue.append(header + payload)
+            prefix = struct.pack('>IBQ', len(payload) + 9, _APPLY, actor.id ^ 1)
+            self.__send_queue.append(prefix + payload)
             self.__send_condition.notify()
         return actor.run()
 
@@ -271,37 +279,34 @@ class Connection:
     def _actor_result_hook(self, actor_id, result):
         # FIXME handle exceptions
         payload = pickle.dumps(result)
-        header = struct.pack('>BII', 1, actor_id ^ 1, len(payload))
+        prefix = struct.pack('>IBQ', len(payload) + 9, _RESULT, actor_id ^ 1)
         with self.__lock:
             if not self.__cancelled:
-                self.__send_queue.append(header + payload)
+                self.__send_queue.append(prefix + payload)
                 self.__send_condition.notify()
 
     def __receiver_loop(self):
         try:
             while True:
-                header = self.__recvall(9)
+                header = self.__recvall(4)
                 if not header:
                     break
-                assert len(header) == 9
-                msg_type, actor_id, payload_size = struct.unpack('>BII', header)
-                payload = self.__recvall(payload_size)
-                assert len(payload) == payload_size
+                if len(header) != 4:
+                    raise ProtocolError('Incomplete message size')
+                size, = struct.unpack('>I', header)
+                if size == 0:
+                    raise ProtocolError('Empty message')
+                msg = self.__recvall(size)
+                if len(msg) != size:
+                    raise ProtocolError('Incomplete message')
                 with self.__lock:
                     if self.__cancelled:
                         break
-                    if msg_type == 0:
-                        actor = self.__actors.get(actor_id)
-                        if actor is None:
-                            assert actor_id & 1
-                            actor = self.__actors[actor_id] = _Actor(actor_id, self)
-                            actor_thread = _ActorThread(actor, self.__tls)
-                            self.__actor_threads.append(actor_thread)
-                            actor_thread.start()
-                        actor.append_apply(payload)
-                    else:
-                        actor = self.__actors[actor_id]
-                        actor.append_result(payload)
+                    msg_type = msg[0]
+                    handler = self.__handlers_locked.get(msg_type)
+                    if handler is None:
+                        raise ProtocolError('Invalid message type: %d' % (msg_type, ))
+                    handler(self, msg)
         except Exception as error:
             self.__cancel(error)
         except:
@@ -309,6 +314,32 @@ class Connection:
             raise
         else:
             self.__cancel()
+
+    def __handle_apply_locked(self, msg):
+        if len(msg) < 9:
+            raise ProtocolError('Incomplete apply message')
+        actor_id, = struct.unpack_from('>Q', msg, 1)
+        actor = self.__actors.get(actor_id)
+        if actor is None:
+            if not actor_id & 1:
+                raise ProtocolError('Actor not found: %d' % (actor_id, ))
+            actor = self.__actors[actor_id] = _Actor(actor_id, self)
+            actor_thread = _ActorThread(actor, self.__tls)
+            self.__actor_threads.append(actor_thread)
+            actor_thread.start()
+        actor.append_apply(msg[9:])
+
+    def __handle_result_locked(self, msg):
+        if len(msg) < 9:
+            raise ProtocolError('Incomplete result message')
+        actor_id, = struct.unpack_from('>Q', msg, 1)
+        actor = self.__actors[actor_id]
+        actor.append_result(msg[9:])
+
+    __handlers_locked = {
+        _APPLY: __handle_apply_locked,
+        _RESULT: __handle_result_locked,
+    }
 
     def wait(self):
         with self.__lock:
