@@ -75,10 +75,17 @@ _main()
 """
 
 
+class _ConnTls(threading.local):
+    def __init__(self):
+        self.conn = None
+
+_conn_tls = _ConnTls()
+
+
 class _Actor:
-    def __init__(self, id, result_hook):
+    def __init__(self, id, conn):
         self.id = id
-        self.__result_hook = result_hook
+        self.__conn = conn
         self.__lock = threading.Lock()
         self.__condition = threading.Condition(self.__lock)
         self.__task = None
@@ -113,13 +120,18 @@ class _Actor:
                         raise ConnectionBroken
                 is_result, payload = self.__task
                 self.__task = None
-            obj = pickle.loads(payload)
-            if is_result:
-                return obj
-            else:
-                func, args, kwargs = obj
-                result = func(*args, **kwargs)
-                self.__result_hook(self.id, result)
+            old_conn = _conn_tls.conn
+            _conn_tls.conn = self.__conn
+            try:
+                obj = pickle.loads(payload)
+                if is_result:
+                    return obj
+                else:
+                    func, args, kwargs = obj
+                    result = func(*args, **kwargs)
+                    self.__conn._actor_result_hook(self.id, result)
+            finally:
+                _conn_tls.conn = old_conn
 
 
 class _ActorThread(threading.Thread):
@@ -195,7 +207,7 @@ class Connection:
         except AttributeError:
             actor_id = self.__next_actor_id
             self.__next_actor_id += 2
-            actor = self.__actors[actor_id] = self.__tls.actor = _Actor(actor_id, self.__result_hook)
+            actor = self.__actors[actor_id] = self.__tls.actor = _Actor(actor_id, self)
             return actor
 
     def apply(self, func, args=None, kwargs=None):
@@ -203,7 +215,14 @@ class Connection:
             args = ()
         if kwargs is None:
             kwargs = {}
-        payload = pickle.dumps((func, args, kwargs))
+
+        old_conn = _conn_tls.conn
+        _conn_tls.conn = self
+        try:
+            payload = pickle.dumps((func, args, kwargs))
+        finally:
+            _conn_tls.conn = old_conn
+
         with self.__lock:
             if self.__cancelled:
                 raise ConnectionBroken
@@ -249,7 +268,7 @@ class Connection:
             size -= len(chunk)
         return data
 
-    def __result_hook(self, actor_id, result):
+    def _actor_result_hook(self, actor_id, result):
         # FIXME handle exceptions
         payload = pickle.dumps(result)
         header = struct.pack('>BII', 1, actor_id ^ 1, len(payload))
@@ -275,7 +294,7 @@ class Connection:
                         actor = self.__actors.get(actor_id)
                         if actor is None:
                             assert actor_id & 1
-                            actor = self.__actors[actor_id] = _Actor(actor_id, self.__result_hook)
+                            actor = self.__actors[actor_id] = _Actor(actor_id, self)
                             actor_thread = _ActorThread(actor, self.__tls)
                             self.__actor_threads.append(actor_thread)
                             actor_thread.start()
@@ -295,6 +314,13 @@ class Connection:
         with self.__lock:
             while not self.__cancelled:
                 self.__cancel_condition.wait()
+
+
+def get_connection():
+    conn = _conn_tls.conn
+    if conn is None:
+        raise RuntimeError
+    return conn
 
 
 def _main():
