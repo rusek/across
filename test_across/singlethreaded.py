@@ -1,5 +1,7 @@
 import unittest
-from .utils import make_connection
+import across
+import threading
+from .utils import make_connection, Box
 
 
 magic = 'abracadabra'
@@ -53,3 +55,33 @@ class SingleThreadedTest(unittest.TestCase):
                 (lambda a: None)()
             with self.assertRaises(TypeError):
                 conn.call()
+
+    def test_nested_call(self):
+        @Box
+        def factorial(n):
+            return 1 if n == 0 else n * across.get_connection().call(factorial, n - 1)
+
+        with make_connection() as conn:
+            self.assertEqual(conn.call(factorial, 5), 120)
+
+    def test_nested_call_reuses_threads(self):
+        remote_thread = Box()
+        local_thread = threading.current_thread()
+        with make_connection() as conn:
+            @Box
+            def call_local_loop(n):
+                self.assertIs(local_thread, threading.current_thread())
+                if n:
+                    conn.call(call_remote_loop, n - 1)
+
+            @Box
+            def call_remote_loop(n):
+                self.assertIs(remote_thread.value, threading.current_thread())
+                across.get_connection().call(call_local_loop, n)
+
+            @Box
+            def call_remote():
+                remote_thread.value = threading.current_thread()
+                across.get_connection().call(call_local_loop, 5)
+
+            conn.call(call_remote)
