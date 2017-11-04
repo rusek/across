@@ -93,6 +93,7 @@ class _Actor:
 
     def submit(self, func, *args):
         with self.__lock:
+            # TODO should be a protocol error
             assert self.__task is None
             self.__task = func, args
             self.__condition.notify()
@@ -200,6 +201,7 @@ class Connection:
     def __cancel(self, error=None):
         with self.__lock:
             if self.__cancelled:
+                # TODO should probably set error if not set
                 return
             self.__cancelled = True
             self.__cancel_error = error
@@ -253,6 +255,7 @@ class Connection:
         except Exception as error:
             self.__cancel(error)
         except:
+            # TODO set error
             self.__cancel()
             raise
         else:
@@ -297,6 +300,7 @@ class Connection:
         except Exception as error:
             self.__cancel(error)
         except:
+            # TODO set error
             self.__cancel()
             raise
         else:
@@ -317,6 +321,8 @@ class Connection:
         actor.submit(self.__process_apply, msg, actor_id)
 
     def __process_apply(self, msg, actor_id):
+        # TODO handle pickle errors, unhandled exceptions should cancel connection
+
         with _ConnScope(self):
             func, args, kwargs = pickle.loads(msg[9:])
             try:
