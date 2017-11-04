@@ -117,7 +117,7 @@ class _Actor:
                     if main:
                         return None
                     else:
-                        raise ConnectionBroken
+                        raise ConnectionLost
                 is_result, payload = self.__task
                 self.__task = None
             old_conn = _conn_tls.conn
@@ -145,7 +145,7 @@ class _ActorThread(threading.Thread):
         self.__actor.run(main=True)
 
 
-class ConnectionBroken(Exception):
+class ConnectionLost(Exception):
     pass
 
 
@@ -225,7 +225,7 @@ class Connection:
 
         with self.__lock:
             if self.__cancelled:
-                raise ConnectionBroken
+                raise ConnectionLost
             actor = self.__get_current_actor_locked()
             header = struct.pack('>BII', 0, actor.id ^ 1, len(payload))
             self.__send_queue.append(header + payload)
