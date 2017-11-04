@@ -1,35 +1,6 @@
 import unittest
 import across
-import threading
-from .memchan import MemoryChannel
-
-
-_box_counter = 0
-_box_counter_lock = threading.Lock()
-_box_values = {}
-
-
-class Box(object):
-    def __init__(self, value):
-        self.value = value
-
-    def __call__(self, *args, **kwargs):
-        return self.value(*args, **kwargs)
-
-    def __getstate__(self):
-        global _box_counter
-        with _box_counter_lock:
-            key = _box_counter
-            _box_counter += 1
-        _box_values[key] = self.value
-        return key
-
-    def __setstate__(self, key):
-        self.value = _box_values.pop(key)
-
-
-def make_connection():
-    return across.Connection(MemoryChannel())
+from .utils import make_connection, Box
 
 
 def nop(*args, **kwargs):

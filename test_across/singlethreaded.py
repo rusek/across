@@ -1,10 +1,5 @@
 import unittest
-import across
-from .memchan import MemoryChannel
-
-
-def make_connection():
-    return across.Connection(MemoryChannel())
+from .utils import make_connection
 
 
 magic = 'abracadabra'
