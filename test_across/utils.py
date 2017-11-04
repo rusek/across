@@ -112,3 +112,33 @@ class Box(object):
 
     def __setstate__(self, key):
         self.value = _box_values.pop(key)
+
+
+class _ParThread(threading.Thread):
+    def __init__(self, func):
+        super(_ParThread, self).__init__()
+        self.__func = func
+        self.__value = None
+        self.__error = None
+        self.start()
+
+    def get_value(self):
+        if self.__error:
+            try:
+                raise self.__error
+            finally:
+                self.__error = None
+        return self.__value
+
+    def run(self):
+        try:
+            self.__value = self.__func()
+        except Exception as error:
+            self.__error = error
+
+
+def par(*funcs):
+    threads = [_ParThread(func) for func in funcs]
+    for thread in threads:
+        thread.join()
+    return tuple(thread.get_value() for thread in threads)
