@@ -91,16 +91,10 @@ class _Actor:
         self.__task = None
         self.__cancelled = False
 
-    def append_apply(self, payload):
+    def submit(self, func, *args):
         with self.__lock:
             assert self.__task is None
-            self.__task = False, payload
-            self.__condition.notify()
-
-    def append_result(self, payload):
-        with self.__lock:
-            assert self.__task is None
-            self.__task = True, payload
+            self.__task = func, args
             self.__condition.notify()
 
     def cancel(self):
@@ -108,30 +102,24 @@ class _Actor:
             self.__cancelled = True
             self.__condition.notify()
 
+    def __get_task(self):
+        with self.__lock:
+            while self.__task is None and not self.__cancelled:
+                self.__condition.wait()
+            if self.__cancelled:
+                return None
+            task, self.__task = self.__task, None
+            return task
+
     def run(self, main=False):
-        while True:
-            with self.__lock:
-                while self.__task is None and not self.__cancelled:
-                    self.__condition.wait()
-                if self.__cancelled:
-                    if main:
-                        return None
-                    else:
-                        raise ConnectionLost
-                is_result, payload = self.__task
-                self.__task = None
-            old_conn = _conn_tls.conn
-            _conn_tls.conn = self.__conn
-            try:
-                obj = pickle.loads(payload)
-                if is_result:
-                    return obj
-                else:
-                    func, args, kwargs = obj
-                    result = func(*args, **kwargs)
-                    self.__conn._actor_result_hook(self.id, result)
-            finally:
-                _conn_tls.conn = old_conn
+        for func, args in iter(self.__get_task, None):
+            is_result, value = func(*args)
+            if is_result is True:
+                return value
+            elif is_result is False:
+                raise value
+        if not main:
+            raise ConnectionLost
 
 
 class _ActorThread(threading.Thread):
@@ -155,6 +143,18 @@ class ProtocolError(Exception):
 
 _APPLY = 1
 _RESULT = 2
+_ERROR = 3
+
+
+class _ConnScope(object):
+    def __init__(self, conn):
+        self.__conn = conn
+
+    def __enter__(self):
+        _conn_tls.conn, self.__conn = self.__conn,  _conn_tls.conn
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        _conn_tls.conn = self.__conn
 
 
 class Connection:
@@ -224,12 +224,8 @@ class Connection:
         if kwargs is None:
             kwargs = {}
 
-        old_conn = _conn_tls.conn
-        _conn_tls.conn = self
-        try:
+        with _ConnScope(self):
             payload = pickle.dumps((func, args, kwargs))
-        finally:
-            _conn_tls.conn = old_conn
 
         with self.__lock:
             if self.__cancelled:
@@ -276,15 +272,6 @@ class Connection:
             size -= len(chunk)
         return data
 
-    def _actor_result_hook(self, actor_id, result):
-        # FIXME handle exceptions
-        payload = pickle.dumps(result)
-        prefix = struct.pack('>IBQ', len(payload) + 9, _RESULT, actor_id ^ 1)
-        with self.__lock:
-            if not self.__cancelled:
-                self.__send_queue.append(prefix + payload)
-                self.__send_condition.notify()
-
     def __receiver_loop(self):
         try:
             while True:
@@ -327,18 +314,56 @@ class Connection:
             actor_thread = _ActorThread(actor, self.__tls)
             self.__actor_threads.append(actor_thread)
             actor_thread.start()
-        actor.append_apply(msg[9:])
+        actor.submit(self.__process_apply, msg, actor_id)
+
+    def __process_apply(self, msg, actor_id):
+        with _ConnScope(self):
+            func, args, kwargs = pickle.loads(msg[9:])
+            try:
+                result = func(*args, **kwargs)
+            except Exception as error:
+                payload = pickle.dumps(error)
+                msg = struct.pack('>IBQ', len(payload) + 9, _ERROR, actor_id ^ 1) + payload
+            else:
+                payload = pickle.dumps(result)
+                msg = struct.pack('>IBQ', len(payload) + 9, _RESULT, actor_id ^ 1) + payload
+
+        with self.__lock:
+            if not self.__cancelled:
+                self.__send_queue.append(msg)
+                self.__send_condition.notify()
+        return None, None
 
     def __handle_result_locked(self, msg):
         if len(msg) < 9:
             raise ProtocolError('Incomplete result message')
         actor_id, = struct.unpack_from('>Q', msg, 1)
-        actor = self.__actors[actor_id]
-        actor.append_result(msg[9:])
+        actor = self.__actors.get(actor_id)
+        if actor is None:
+            raise ProtocolError('Actor not found: %d' % (actor_id, ))
+        actor.submit(self.__process_result, msg)
+
+    def __process_result(self, msg):
+        with _ConnScope(self):
+            return True, pickle.loads(msg[9:])
+
+    def __handle_error_locked(self, msg):
+        if len(msg) < 9:
+            raise ProtocolError('Incomplete error message')
+        actor_id, = struct.unpack_from('>Q', msg, 1)
+        actor = self.__actors.get(actor_id)
+        if actor is None:
+            raise ProtocolError('Actor not found: %d' % (actor_id, ))
+        actor.submit(self.__process_error, msg)
+
+    def __process_error(self, msg):
+        with _ConnScope(self):
+            return False, pickle.loads(msg[9:])
 
     __handlers_locked = {
         _APPLY: __handle_apply_locked,
         _RESULT: __handle_result_locked,
+        _ERROR: __handle_error_locked,
     }
 
     def wait(self):

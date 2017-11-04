@@ -24,7 +24,7 @@ class PickleObserver(object):
 
 
 class GetConnectionTest(unittest.TestCase):
-    def test_get_connection_during_pickling(self):
+    def test_get_connection_during_call_pickling(self):
         with make_connection() as conn:
             def on_pickle():
                 self.assertIs(across.get_connection(), conn)
@@ -35,7 +35,7 @@ class GetConnectionTest(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 across.get_connection()
 
-    def test_get_connection_during_unpickling(self):
+    def test_get_connection_during_call_unpickling(self):
         with make_connection() as conn:
             def on_unpickle():
                 remote_conn = across.get_connection()
@@ -45,6 +45,67 @@ class GetConnectionTest(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 across.get_connection()
             conn.call(nop, PickleObserver(on_unpickle=on_unpickle))
+            with self.assertRaises(RuntimeError):
+                across.get_connection()
+
+    def test_get_connection_during_result_pickling(self):
+        remote_conn = Box()
+
+        def on_pickle():
+            self.assertIs(across.get_connection(), remote_conn.value)
+
+        def func():
+            remote_conn.value = across.get_connection()
+            return PickleObserver(on_pickle=on_pickle)
+
+        with make_connection() as conn:
+            with self.assertRaises(RuntimeError):
+                across.get_connection()
+            conn.call(Box(func))
+            with self.assertRaises(RuntimeError):
+                across.get_connection()
+
+    def test_get_connection_during_result_unpickling(self):
+        with make_connection() as conn:
+            def on_unpickle():
+                self.assertIs(across.get_connection(), conn)
+
+            with self.assertRaises(RuntimeError):
+                across.get_connection()
+            conn.call(Box(lambda: PickleObserver(on_unpickle=on_unpickle)))
+            with self.assertRaises(RuntimeError):
+                across.get_connection()
+
+    def test_get_connection_during_error_pickling(self):
+        remote_conn = Box()
+
+        def on_pickle():
+            self.assertIs(across.get_connection(), remote_conn.value)
+
+        def func():
+            remote_conn.value = across.get_connection()
+            raise ArithmeticError(PickleObserver(on_pickle=on_pickle))
+
+        with make_connection() as conn:
+            with self.assertRaises(RuntimeError):
+                across.get_connection()
+            with self.assertRaises(ArithmeticError):
+                conn.call(Box(func))
+            with self.assertRaises(RuntimeError):
+                across.get_connection()
+
+    def test_get_connection_during_error_unpickling(self):
+        with make_connection() as conn:
+            def on_unpickle():
+                self.assertIs(across.get_connection(), conn)
+
+            def func():
+                raise ArithmeticError(PickleObserver(on_unpickle=on_unpickle))
+
+            with self.assertRaises(RuntimeError):
+                across.get_connection()
+            with self.assertRaises(ArithmeticError):
+                conn.call(Box(func))
             with self.assertRaises(RuntimeError):
                 across.get_connection()
 

@@ -85,3 +85,10 @@ class SingleThreadedTest(unittest.TestCase):
                 across.get_connection().call(call_local_loop, 5)
 
             conn.call(call_remote)
+
+    def test_exception(self):
+        def func():
+            raise ValueError
+        with make_connection() as conn:
+            with self.assertRaises(ValueError):
+                conn.call(Box(func))

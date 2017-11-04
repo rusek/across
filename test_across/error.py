@@ -82,3 +82,15 @@ class ProtocolErrorTest(unittest.TestCase):
     def test_incomplete_result_msg(self):
         with self.assertRaisesRegex(across.ProtocolError, 'Incomplete result message'):
             self.__simulate_error(struct.pack('>IB', 1 + 7, across._RESULT) + b'\0' * 7)
+
+    def test_invalid_result_actor(self):
+        with self.assertRaisesRegex(across.ProtocolError, 'Actor not found: 404'):
+            self.__simulate_error(struct.pack('>IBQ', 1 + 8, across._RESULT, 404))
+
+    def test_incomplete_error_msg(self):
+        with self.assertRaisesRegex(across.ProtocolError, 'Incomplete error message'):
+            self.__simulate_error(struct.pack('>IB', 1 + 7, across._ERROR) + b'\0' * 7)
+
+    def test_invalid_error_actor(self):
+        with self.assertRaisesRegex(across.ProtocolError, 'Actor not found: 404'):
+            self.__simulate_error(struct.pack('>IBQ', 1 + 8, across._ERROR, 404))
