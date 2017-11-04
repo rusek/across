@@ -1,9 +1,9 @@
 import unittest
-from . import singlethreaded, multithreaded, getconn, error
+from . import singlethreaded, multithreaded, getconn, error, process
 
 
 def load_tests(loader, tests, pattern):
     suite = unittest.TestSuite()
-    for mod in [singlethreaded, multithreaded, getconn, error]:
+    for mod in [singlethreaded, multithreaded, getconn, error, process]:
         suite.addTests(loader.loadTestsFromModule(mod))
     return suite
