@@ -178,6 +178,19 @@ class Connection:
         self.__sender_thread.start()
         self.__receiver_thread.start()
 
+        self.__objs = {}
+        self.__obj_counter = 0
+
+    def _get_obj(self, id):
+        return self.__objs[id]
+
+    def _put_obj(self, obj):
+        with self.__lock:
+            id = self.__obj_counter
+            self.__obj_counter += 1
+        self.__objs[id] = obj
+        return id
+
     def __enter__(self):
         return self
 
@@ -239,8 +252,15 @@ class Connection:
         return actor.run()
 
     def call(*args, **kwargs):
-        self, func, args = (lambda s, f, *a: (s, f, a))(*args)
-        return self.apply(func, args, kwargs)
+        try:
+            self, func = args[:2]
+        except ValueError:
+            if not args:
+                msg = "call() missing 2 required positional arguments: 'self' and 'func'"
+            else:
+                msg = "call() missing 1 required positional argument: 'func'"
+            raise TypeError(msg) from None
+        return self.apply(func, args[2:], kwargs)
 
     def __sender_loop(self):
         try:
@@ -376,6 +396,88 @@ class Connection:
         with self.__lock:
             while not self.__cancelled:
                 self.__cancel_condition.wait()
+
+    def create(*args, **kwargs):
+        try:
+            self, func = args[:2]
+        except ValueError:
+            if not args:
+                msg = "create() missing 2 required positional arguments: 'self' and 'func'"
+            else:
+                msg = "create() missing 1 required positional argument: 'func'"
+            raise TypeError(msg) from None
+        return self.apply(_apply_local, (func, args[2:], kwargs))
+
+    def replicate(self, value):
+        return self.apply(Local, (value, ))
+
+
+class Proxy(object):
+    def __init__(self, id):
+        self._Proxy__conn = get_connection()
+        self.__id = id
+
+    def __deepcopy__(self, memo):
+        return self._Proxy__conn.apply(_get_obj, (self.__id, ))
+
+    def __reduce__(self):
+        conn = get_connection()
+        if conn is not self._Proxy__conn:
+            raise ValueError
+        return _get_obj, (self.__id, )
+
+
+_proxy_types = {}
+_safe_magic = frozenset([
+    '__contains__', '__delitem__', '__getitem__', '__len__', '__setitem__', '__call__'])
+
+
+def _make_auto_proxy_type(cls):
+    scope = {'Proxy': Proxy, '_apply_method': _apply_method}
+    source = ['class _AutoProxy(Proxy):\n']
+
+    for attr in dir(cls):
+        if not callable(getattr(cls, attr)) or (attr.startswith('_') and attr not in _safe_magic):
+            continue
+        source.append(
+            '    def %(name)s(self, *args, **kwargs):\n'
+            '        return self._Proxy__conn.apply(_apply_method, (self, %(name)r, args, kwargs))\n'
+            % dict(name=attr)
+        )
+
+    if len(source) == 1:
+        source.append('    pass\n')
+
+    exec(''.join(source), scope)
+    return scope['_AutoProxy']
+
+
+class Local(object):
+    def __init__(self, value):
+        assert not isinstance(value, (Proxy, Local))
+        self.value = value
+
+    def __reduce__(self):
+        return _make_proxy, (type(self.value), get_connection()._put_obj(self.value))
+
+
+def _apply_method(obj, name, args, kwargs):
+    return getattr(obj, name)(*args, **kwargs)
+
+
+def _get_obj(id):
+    return get_connection()._get_obj(id)
+
+
+def _apply_local(func, args, kwargs):
+    return Local(func(*args, **kwargs))
+
+
+def _make_proxy(cls, id):
+    proxy_type = _proxy_types.get(cls)
+    if proxy_type is None:
+        proxy_type = _proxy_types[cls] = _make_auto_proxy_type(cls)
+    return proxy_type(id)
 
 
 def get_connection():
