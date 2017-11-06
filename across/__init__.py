@@ -54,7 +54,7 @@ class PipeChannel(Channel):
 class ProcessChannel(PipeChannel):
     def __init__(self, args=None):
         if args is None:
-            args = [sys.executable, '-c', boot]
+            args = [sys.executable, '-m', __name__]
         process = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
         super().__init__(process.stdout, process.stdin)
         self.__process = process
@@ -67,12 +67,6 @@ class ProcessChannel(PipeChannel):
         retcode = self.__process.wait()
         if retcode:
             raise subprocess.CalledProcessError(retcode, self.__args)
-
-
-boot = """
-from across import _main
-_main()
-"""
 
 
 class _ConnTls(threading.local):
@@ -485,9 +479,3 @@ def get_connection():
     if conn is None:
         raise RuntimeError
     return conn
-
-
-def _main():
-    channel = PipeChannel(sys.stdin.buffer, sys.stdout.buffer)
-    with Connection(channel) as conn:
-        conn.wait()
