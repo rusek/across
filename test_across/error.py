@@ -1,6 +1,7 @@
 import unittest
 import across
 import struct
+import sys
 from .utils import make_connection, MemoryChannel, Box
 
 
@@ -49,7 +50,9 @@ class ProtocolErrorChannel(across.Channel):
 
 
 class ProtocolErrorTest(unittest.TestCase):
-    def __simulate_error(self, data):
+    def __simulate_error(self, data, prepend_greeting=True):
+        if prepend_greeting:
+            data = across._get_greeting_frame() + data
         with across.Connection(ProtocolErrorChannel(data)) as conn:
             conn.wait()
 
@@ -94,3 +97,30 @@ class ProtocolErrorTest(unittest.TestCase):
     def test_invalid_error_actor(self):
         with self.assertRaisesRegex(across.ProtocolError, 'Actor not found: 404'):
             self.__simulate_error(struct.pack('>IBQ', 1 + 8, across._ERROR, 404))
+
+    def test_incomplete_greeting_msg(self):
+        with self.assertRaisesRegex(across.ProtocolError, 'Incomplete greeting message'):
+            self.__simulate_error(struct.pack('>IB', 1 + 5, across._GREETING) + b'\0' * 5, prepend_greeting=False)
+
+    def test_incompatible_python_version(self):
+        if sys.version_info[0] >= 3:
+            python_version = (2, 7, 0)
+        else:
+            python_version = (3, 4, 0)
+        frame = struct.pack('>IBBBBBBB', 1 + 6, across._GREETING, *python_version + across._version)
+        with self.assertRaisesRegex(across.ProtocolError, 'Remote python .* is not compatible with local .*'):
+            self.__simulate_error(frame, prepend_greeting=False)
+
+    def test_apply_in_greeting_state(self):
+        with self.assertRaisesRegex(
+            across.ProtocolError,
+            'Unexpected message in greeting state: %r' % (across._APPLY, )
+        ):
+            self.__simulate_error(struct.pack('>IBQ', 1 + 8, across._APPLY, 1), prepend_greeting=False)
+
+    def test_greeting_in_ready_state(self):
+        with self.assertRaisesRegex(
+            across.ProtocolError,
+            'Unexpected message in ready state: %r' % (across._GREETING, )
+        ):
+            self.__simulate_error(struct.pack('>IB', 1 + 6, across._GREETING) + b'\0' * 6)

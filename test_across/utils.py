@@ -1,6 +1,5 @@
 import across
 import threading
-import errno
 
 
 class _MemoryPipe:
@@ -17,7 +16,7 @@ class _MemoryPipe:
             if self.__send_data is not None or self.__send_size is not None:
                 raise AssertionError('send already in progress')
             if self.__cancelled:
-                raise IOError(errno.EPIPE, 'Pipe shut down')
+                return None
             if self.__recv_size is not None:
                 self.__recv_data, self.__recv_size = data[:self.__recv_size], None
                 self.__recv_condition.notify()
@@ -26,7 +25,7 @@ class _MemoryPipe:
             while self.__send_size is None and not self.__cancelled:
                 self.__send_condition.wait()
             if self.__send_size is None:
-                raise IOError(errno.EPIPE, 'Pipe shut down')
+                return None
             size, self.__send_size = self.__send_size, None
             return size
 
@@ -35,7 +34,7 @@ class _MemoryPipe:
             if self.__recv_data is not None or self.__recv_size is not None:
                 raise AssertionError('recv already in progress')
             if self.__cancelled:
-                return b''
+                return None
             if self.__send_data is not None:
                 data = self.__send_data[:size]
                 self.__send_data, self.__send_size = None, len(data)
@@ -45,7 +44,7 @@ class _MemoryPipe:
             while self.__recv_data is None and not self.__cancelled:
                 self.__recv_condition.wait()
             if self.__recv_data is None:
-                return b''
+                return None
             data, self.__recv_data = self.__recv_data, None
             return data
 

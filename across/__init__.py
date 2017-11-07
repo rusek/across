@@ -6,7 +6,10 @@ import subprocess
 import select
 import sys
 import os
-import errno
+
+
+_version = (0, 1, 0)
+__version__ = '%d.%d.%d' % _version
 
 
 class Channel:
@@ -34,13 +37,13 @@ class PipeChannel(Channel):
     def recv(self, size):
         readable_fds, _, _ = select.select([self.__stdin_fd, self.__shutdown_rfd], [], [])
         if self.__shutdown_rfd in readable_fds:
-            return b''
+            return None
         return os.read(self.__stdin_fd, size)
 
     def send(self, data):
         readable_fds, _, _ = select.select([self.__shutdown_rfd], [self.__stdout_fd], [])
         if readable_fds:
-            raise IOError(errno.EPIPE, 'Connection shut down')
+            return None
         return os.write(self.__stdout_fd, data)
 
     def cancel(self):
@@ -136,9 +139,17 @@ class ProtocolError(Exception):
     pass
 
 
+_GREETING = 0
 _APPLY = 1
 _RESULT = 2
 _ERROR = 3
+
+_message_types = frozenset([
+    _GREETING,
+    _APPLY,
+    _RESULT,
+    _ERROR,
+])
 
 
 class _ConnScope(object):
@@ -152,17 +163,22 @@ class _ConnScope(object):
         _conn_tls.conn = self.__conn
 
 
+def _get_greeting_frame():
+    return struct.pack('>IBBBBBBB', 7, _GREETING, *sys.version_info[:3] + _version)
+
+
 class Connection:
     def __init__(self, channel):
         self.__channel = channel
         self.__lock = threading.Lock()
-        self.__send_queue = collections.deque()
+        self.__send_queue = collections.deque([_get_greeting_frame()])
         self.__send_condition = threading.Condition(self.__lock)
         self.__sender_thread = threading.Thread(target=self.__sender_loop)
         self.__receiver_thread = threading.Thread(target=self.__receiver_loop)
         self.__cancelled = False
         self.__cancel_condition = threading.Condition(self.__lock)
         self.__cancel_error = None
+        self.__handlers_locked = self.__greeting_handlers_locked
 
         self.__actors = {}
         self.__next_actor_id = 0
@@ -277,13 +293,18 @@ class Connection:
 
     def __sendall(self, data):
         while data:
-            data = data[self.__channel.send(data):]
+            size = self.__channel.send(data)
+            if size is None:
+                break
+            data = data[size:]
 
     def __recvall(self, size):
         data = b''
         while size:
             chunk = self.__channel.recv(size)
             if not chunk:
+                if chunk is None:
+                    return None
                 return data
             data += chunk
             size -= len(chunk)
@@ -301,6 +322,8 @@ class Connection:
                 if size == 0:
                     raise ProtocolError('Empty message')
                 msg = self.__recvall(size)
+                if msg is None:
+                    break
                 if len(msg) != size:
                     raise ProtocolError('Incomplete message')
                 with self.__lock:
@@ -309,7 +332,9 @@ class Connection:
                     msg_type = msg[0]
                     handler = self.__handlers_locked.get(msg_type)
                     if handler is None:
-                        raise ProtocolError('Invalid message type: %d' % (msg_type, ))
+                        if msg_type not in _message_types:
+                            raise ProtocolError('Invalid message type: %d' % (msg_type, ))
+                        handler = self.__handlers_locked[None]
                     handler(self, msg)
         except Exception as error:
             self.__cancel(error)
@@ -319,6 +344,16 @@ class Connection:
             raise
         else:
             self.__cancel()
+
+    def __handle_greeting_locked(self, msg):
+        if len(msg) < 7:
+            raise ProtocolError('Incomplete greeting message')
+        python_version = struct.unpack_from('BBB', msg, 1)
+        if (python_version[0] >= 3) != (sys.version_info[0] >= 3):
+            raise ProtocolError(
+                'Remote python %r is not compatible with local %r' %
+                (python_version, sys.version_info[:3]))
+        self.__handlers_locked = self.__ready_handlers_locked
 
     def __handle_apply_locked(self, msg):
         if len(msg) < 9:
@@ -380,10 +415,22 @@ class Connection:
         with _ConnScope(self):
             return False, pickle.loads(msg[9:])
 
-    __handlers_locked = {
+    def __unexpected_in_ready_state(self, msg):
+        raise ProtocolError('Unexpected message in ready state: %r' % (msg[0], ))
+
+    def __unexpected_in_greeting_state(self, msg):
+        raise ProtocolError('Unexpected message in greeting state: %r' % (msg[0], ))
+
+    __ready_handlers_locked = {
         _APPLY: __handle_apply_locked,
         _RESULT: __handle_result_locked,
         _ERROR: __handle_error_locked,
+        None: __unexpected_in_ready_state,
+    }
+
+    __greeting_handlers_locked = {
+        _GREETING: __handle_greeting_locked,
+        None: __unexpected_in_greeting_state,
     }
 
     def wait(self):
