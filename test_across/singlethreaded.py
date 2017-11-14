@@ -24,22 +24,6 @@ class SingleThreadedTest(unittest.TestCase):
         conn = make_connection()
         conn.close()
 
-    def test_apply_without_args(self):
-        with make_connection() as conn:
-            self.assertEqual(conn.apply(get_magic), magic)
-            self.assertEqual(conn.apply(get_magic, ()), magic)
-            self.assertEqual(conn.apply(get_magic, (), {}), magic)
-            self.assertEqual(conn.apply(get_magic, None), magic)
-            self.assertEqual(conn.apply(get_magic, None, None), magic)
-            self.assertEqual(conn.apply(get_magic, None, {}), magic)
-            self.assertEqual(conn.apply(get_magic, (), None), magic)
-
-    def test_apply_with_args(self):
-        with make_connection() as conn:
-            self.assertEqual(conn.apply(subtract, (3, 2)), 1)
-            self.assertEqual(conn.apply(subtract, (3, ), dict(right=2)), 1)
-            self.assertEqual(conn.apply(subtract, (), dict(left=3, right=2)), 1)
-
     def test_call(self):
         with make_connection() as conn:
             self.assertEqual(conn.call(get_magic), magic)

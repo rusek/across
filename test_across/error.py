@@ -10,11 +10,11 @@ def nop(*args, **kwargs):
 
 
 class ErrorTest(unittest.TestCase):
-    def test_apply_after_close(self):
+    def test_call_after_close(self):
         conn = make_connection()
         conn.close()
         with self.assertRaises(across.ConnectionLost):
-            conn.apply(nop)
+            conn.call(nop)
 
     def test_connection_lost_during_call(self):
         channel = MemoryChannel()

@@ -246,11 +246,15 @@ class Connection:
             actor = self.__actors[actor_id] = self.__tls.actor = _Actor(actor_id, self)
             return actor
 
-    def apply(self, func, args=None, kwargs=None):
-        if args is None:
-            args = ()
-        if kwargs is None:
-            kwargs = {}
+    def call(*args, **kwargs):
+        try:
+            (self, func), args = args[:2], args[2:]
+        except ValueError:
+            if not args:
+                msg = "call() missing 2 required positional arguments: 'self' and 'func'"
+            else:
+                msg = "call() missing 1 required positional argument: 'func'"
+            raise TypeError(msg) from None
 
         with _ConnScope(self):
             payload = pickle.dumps((func, args, kwargs))
@@ -263,17 +267,6 @@ class Connection:
             self.__send_queue.append(prefix + payload)
             self.__send_condition.notify()
         return actor.run()
-
-    def call(*args, **kwargs):
-        try:
-            self, func = args[:2]
-        except ValueError:
-            if not args:
-                msg = "call() missing 2 required positional arguments: 'self' and 'func'"
-            else:
-                msg = "call() missing 1 required positional argument: 'func'"
-            raise TypeError(msg) from None
-        return self.apply(func, args[2:], kwargs)
 
     def __sender_loop(self):
         try:
@@ -453,10 +446,10 @@ class Connection:
             else:
                 msg = "create() missing 1 required positional argument: 'func'"
             raise TypeError(msg) from None
-        return self.apply(_apply_local, (func, args[2:], kwargs))
+        return self.call(_apply_local, func, args[2:], kwargs)
 
     def replicate(self, value):
-        return self.apply(Local, (value, ))
+        return self.call(Local, value)
 
 
 class Proxy(object):
@@ -465,7 +458,7 @@ class Proxy(object):
         self.__id = id
 
     def __deepcopy__(self, memo):
-        return self._Proxy__conn.apply(_get_obj, (self.__id, ))
+        return self._Proxy__conn.call(_get_obj, self.__id)
 
     def __reduce__(self):
         conn = get_connection()
@@ -488,7 +481,7 @@ def _make_auto_proxy_type(cls):
             continue
         source.append(
             '    def %(name)s(self, *args, **kwargs):\n'
-            '        return self._Proxy__conn.apply(_apply_method, (self, %(name)r, args, kwargs))\n'
+            '        return self._Proxy__conn.call(_apply_method, self, %(name)r, args, kwargs)\n'
             % dict(name=attr)
         )
 
