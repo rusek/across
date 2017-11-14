@@ -102,12 +102,18 @@ class ProtocolErrorTest(unittest.TestCase):
         with self.assertRaisesRegex(across.ProtocolError, 'Incomplete greeting message'):
             self.__simulate_error(struct.pack('>IB', 1 + 5, across._GREETING) + b'\0' * 5, prepend_greeting=False)
 
+    def test_invalid_greeting_magic(self):
+        with self.assertRaisesRegex(across.ProtocolError, 'Invalid magic number .*'):
+            frame = struct.pack('>IBI', 1 + 4 + 6, across._GREETING, 0) + b'\0' * 6
+            self.__simulate_error(frame, prepend_greeting=False)
+
     def test_incompatible_python_version(self):
         if sys.version_info[0] >= 3:
             python_version = (2, 7, 0)
         else:
             python_version = (3, 4, 0)
-        frame = struct.pack('>IBBBBBBB', 1 + 6, across._GREETING, *python_version + across._version)
+        frame = struct.pack(
+            '>IBIBBBBBB', 1 + 4 + 6, across._GREETING, across._greeting_magic, *python_version + across._version)
         with self.assertRaisesRegex(across.ProtocolError, 'Remote python .* is not compatible with local .*'):
             self.__simulate_error(frame, prepend_greeting=False)
 

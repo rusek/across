@@ -163,8 +163,11 @@ class _ConnScope(object):
         _conn_tls.conn = self.__conn
 
 
+_greeting_magic = 0x02393e73
+
+
 def _get_greeting_frame():
-    return struct.pack('>IBBBBBBB', 7, _GREETING, *sys.version_info[:3] + _version)
+    return struct.pack('>IBIBBBBBB', 11, _GREETING, _greeting_magic, *sys.version_info[:3] + _version)
 
 
 class Connection:
@@ -346,9 +349,12 @@ class Connection:
             self.__cancel()
 
     def __handle_greeting_locked(self, msg):
-        if len(msg) < 7:
+        if len(msg) < 11:
             raise ProtocolError('Incomplete greeting message')
-        python_version = struct.unpack_from('BBB', msg, 1)
+        magic, = struct.unpack_from('>I', msg, 1)
+        if magic != _greeting_magic:
+            raise ProtocolError('Invalid magic number (0x%x != 0x%x)' % (magic, _greeting_magic))
+        python_version = struct.unpack_from('BBB', msg, 5)
         if (python_version[0] >= 3) != (sys.version_info[0] >= 3):
             raise ProtocolError(
                 'Remote python %r is not compatible with local %r' %
