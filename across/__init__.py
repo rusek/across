@@ -131,6 +131,10 @@ class _ActorThread(threading.Thread):
         self.__actor.run(main=True)
 
 
+class OperationError(Exception):
+    pass
+
+
 class ConnectionLost(Exception):
     pass
 
@@ -143,12 +147,14 @@ _GREETING = 0
 _APPLY = 1
 _RESULT = 2
 _ERROR = 3
+_OPERATION_ERROR = 4
 
 _message_types = frozenset([
     _GREETING,
     _APPLY,
     _RESULT,
     _ERROR,
+    _OPERATION_ERROR,
 ])
 
 
@@ -256,8 +262,7 @@ class Connection:
                 msg = "call() missing 1 required positional argument: 'func'"
             raise TypeError(msg) from None
 
-        with _ConnScope(self):
-            payload = pickle.dumps((func, args, kwargs))
+        payload = self.__pickle((func, args, kwargs))
 
         with self.__lock:
             if self.__cancelled:
@@ -267,6 +272,20 @@ class Connection:
             self.__send_queue.append(prefix + payload)
             self.__send_condition.notify()
         return actor.run()
+
+    def __pickle(self, obj):
+        with _ConnScope(self):
+            try:
+                return pickle.dumps(obj)
+            except Exception as error:
+                raise OperationError('Pickling failed: %s' % (error, ))
+
+    def __unpickle(self, data):
+        with _ConnScope(self):
+            try:
+                return pickle.loads(data)
+            except Exception as error:
+                raise OperationError('Unpickling failed: %s' % (error, ))
 
     def __sender_loop(self):
         try:
@@ -369,19 +388,25 @@ class Connection:
         actor.submit(self.__process_apply, msg, actor_id)
 
     def __process_apply(self, msg, actor_id):
-        # TODO handle pickle errors, unhandled exceptions should cancel connection
+        # TODO unhandled exceptions should cancel connection
+        try:
+            obj = self.__unpickle(msg[9:])
+            with _ConnScope(self):
+                try:
+                    func, args, kwargs = obj
+                    result = func(*args, **kwargs)
+                except Exception as error:
+                    obj = error
+                    msg_type = _ERROR
+                else:
+                    obj = result
+                    msg_type = _RESULT
+            payload = self.__pickle(obj)
+        except OperationError as error:
+            payload = str(error).encode('utf-8', errors='replace')
+            msg_type = _OPERATION_ERROR
 
-        with _ConnScope(self):
-            func, args, kwargs = pickle.loads(msg[9:])
-            try:
-                result = func(*args, **kwargs)
-            except Exception as error:
-                payload = pickle.dumps(error)
-                msg = struct.pack('>IBQ', len(payload) + 9, _ERROR, actor_id ^ 1) + payload
-            else:
-                payload = pickle.dumps(result)
-                msg = struct.pack('>IBQ', len(payload) + 9, _RESULT, actor_id ^ 1) + payload
-
+        msg = struct.pack('>IBQ', len(payload) + 9, msg_type, actor_id ^ 1) + payload
         with self.__lock:
             if not self.__cancelled:
                 self.__send_queue.append(msg)
@@ -398,8 +423,10 @@ class Connection:
         actor.submit(self.__process_result, msg)
 
     def __process_result(self, msg):
-        with _ConnScope(self):
-            return True, pickle.loads(msg[9:])
+        try:
+            return True, self.__unpickle(msg[9:])
+        except OperationError as error:
+            return False, error
 
     def __handle_error_locked(self, msg):
         if len(msg) < 9:
@@ -411,8 +438,22 @@ class Connection:
         actor.submit(self.__process_error, msg)
 
     def __process_error(self, msg):
-        with _ConnScope(self):
-            return False, pickle.loads(msg[9:])
+        try:
+            return False, self.__unpickle(msg[9:])
+        except OperationError as error:
+            return False, error
+
+    def __handle_operation_error_locked(self, msg):
+        if len(msg) < 9:
+            raise ProtocolError('Incomplete operation error message')
+        actor_id, = struct.unpack_from('>Q', msg, 1)
+        actor = self.__actors.get(actor_id)
+        if actor is None:
+            raise ProtocolError('Actor not found: %d' % (actor_id, ))
+        actor.submit(self.__process_operation_error, msg)
+
+    def __process_operation_error(self, msg):
+        return False, OperationError(msg[9:].decode('utf-8', errors='replace'))
 
     def __unexpected_in_ready_state(self, msg):
         raise ProtocolError('Unexpected message in ready state: %r' % (msg[0], ))
@@ -424,6 +465,7 @@ class Connection:
         _APPLY: __handle_apply_locked,
         _RESULT: __handle_result_locked,
         _ERROR: __handle_error_locked,
+        _OPERATION_ERROR: __handle_operation_error_locked,
         None: __unexpected_in_ready_state,
     }
 

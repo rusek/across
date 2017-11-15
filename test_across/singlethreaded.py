@@ -76,3 +76,81 @@ class SingleThreadedTest(unittest.TestCase):
         with make_connection() as conn:
             with self.assertRaises(ValueError):
                 conn.call(Box(func))
+
+
+class BrokenPickle(object):
+    def __reduce__(self):
+        raise TypeError('%s is not pickleable' % (self.__class__.__name__, ))
+
+
+class BrokenPickleError(BrokenPickle, Exception):
+    pass
+
+
+def _reduce_broken_unpickle(cls):
+    raise TypeError('%s is not unpickleable' % (cls.__name__, ))
+
+
+class BrokenUnpickle(object):
+    def __reduce__(self):
+        return _reduce_broken_unpickle, (self.__class__, )
+
+
+class BrokenUnpickleError(BrokenUnpickle, Exception):
+    pass
+
+
+class PicklingExceptionTest(unittest.TestCase):
+    def test_pickle_error_in_call_func(self):
+        with make_connection() as conn:
+            with self.assertRaises(across.OperationError):
+                conn.call(lambda: None)
+            self.assertEqual(conn.call(get_magic), magic)
+
+    def test_pickle_error_in_call_argument(self):
+        with make_connection() as conn:
+            with self.assertRaises(across.OperationError):
+                conn.call(get_args, BrokenPickle())
+            self.assertEqual(conn.call(get_magic), magic)
+
+    def test_pickle_error_in_call_result(self):
+        def func():
+            return BrokenPickle()
+
+        with make_connection() as conn:
+            with self.assertRaises(across.OperationError):
+                conn.call(Box(func))
+            self.assertEqual(conn.call(get_magic), magic)
+
+    def test_pickle_error_call_error(self):
+        def func():
+            raise BrokenPickleError()
+
+        with make_connection() as conn:
+            with self.assertRaises(across.OperationError):
+                conn.call(Box(func))
+            self.assertEqual(conn.call(get_magic), magic)
+
+    def test_unpickle_error_in_call(self):
+        with make_connection() as conn:
+            with self.assertRaises(across.OperationError):
+                conn.call(BrokenUnpickle())
+            self.assertEqual(conn.call(get_magic), magic)
+
+    def test_unpickle_error_in_call_result(self):
+        def func():
+            return BrokenUnpickle()
+
+        with make_connection() as conn:
+            with self.assertRaises(across.OperationError):
+                conn.call(Box(func))
+            self.assertEqual(conn.call(get_magic), magic)
+
+    def test_unpickle_error_in_call_error(self):
+        def func():
+            raise BrokenUnpickleError()
+
+        with make_connection() as conn:
+            with self.assertRaises(across.OperationError):
+                conn.call(Box(func))
+            self.assertEqual(conn.call(get_magic), magic)
