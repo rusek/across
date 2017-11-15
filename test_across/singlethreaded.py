@@ -39,6 +39,8 @@ class SingleThreadedTest(unittest.TestCase):
                 (lambda a: None)()
             with self.assertRaises(TypeError):
                 conn.call()
+            with self.assertRaises(TypeError):
+                across.Connection.call()
 
     def test_nested_call(self):
         @Box
