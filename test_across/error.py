@@ -9,20 +9,20 @@ def nop(*args, **kwargs):
     pass
 
 
-class ErrorTest(unittest.TestCase):
+class DisconnectErrorTest(unittest.TestCase):
     def test_call_after_close(self):
         conn = make_connection()
         conn.close()
-        with self.assertRaises(across.ConnectionLost):
+        with self.assertRaises(across.DisconnectError):
             conn.call(nop)
 
-    def test_connection_lost_during_call(self):
+    def test_disconnect_during_call(self):
         channel = MemoryChannel()
         conn = across.Connection(channel)
         try:
-            with self.assertRaises(across.ConnectionLost):
+            with self.assertRaises(across.DisconnectError):
                 conn.call(Box(channel.cancel))
-            with self.assertRaises(across.ConnectionLost):
+            with self.assertRaises(across.DisconnectError):
                 conn.call(nop)
         finally:
             try:

@@ -117,7 +117,7 @@ class _Actor:
             elif is_result is False:
                 raise value
         if not main:
-            raise ConnectionLost
+            raise DisconnectError
 
 
 class _ActorThread(threading.Thread):
@@ -135,7 +135,7 @@ class OperationError(Exception):
     pass
 
 
-class ConnectionLost(Exception):
+class DisconnectError(OperationError):
     pass
 
 
@@ -266,7 +266,7 @@ class Connection:
 
         with self.__lock:
             if self.__cancelled:
-                raise ConnectionLost
+                raise DisconnectError
             actor = self.__get_current_actor_locked()
             prefix = struct.pack('>IBQ', len(payload) + 9, _APPLY, actor.id ^ 1)
             self.__send_queue.append(prefix + payload)
