@@ -6,6 +6,7 @@ import subprocess
 import select
 import sys
 import os
+import types
 
 
 _version = (0, 1, 0)
@@ -540,7 +541,15 @@ class Local(object):
         self.value = value
 
     def __reduce__(self):
-        return _make_proxy, (type(self.value), get_connection()._put_obj(self.value))
+        cls = type(self.value)
+        return _make_proxy, (_types_to_names.get(cls, cls), get_connection()._put_obj(self.value))
+
+
+_names_to_types = {
+    'func': types.FunctionType,
+    'builtin_func': types.BuiltinFunctionType,
+}
+_types_to_names = dict((v, k) for k, v in _names_to_types.items())
 
 
 def _apply_method(obj, name, args, kwargs):
@@ -556,6 +565,7 @@ def _apply_local(func, args, kwargs):
 
 
 def _make_proxy(cls, id):
+    cls = _names_to_types.get(cls, cls)
     proxy_type = _proxy_types.get(cls)
     if proxy_type is None:
         proxy_type = _proxy_types[cls] = _make_auto_proxy_type(cls)

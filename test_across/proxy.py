@@ -19,6 +19,10 @@ def get_args(*args, **kwargs):
     return args, kwargs
 
 
+def call(func, *args, **kwargs):
+    return func(*args, **kwargs)
+
+
 class Add(object):
     def __call__(self, left, right):
         return left + right
@@ -71,6 +75,18 @@ class ProxyTestCase(unittest.TestCase):
             proxy = conn.call(Box(lambda: across.Local(5)))
             self.assertIsInstance(proxy, across.Proxy)
             self.assertEqual(copy.deepcopy(proxy), 5)
+
+    def test_local_with_lambda(self):
+        with make_connection() as conn:
+            self.assertEqual(conn.call(call, across.Local(lambda: 5)), 5)
+
+    def test_local_with_func(self):
+        with make_connection() as conn:
+            self.assertEqual(conn.call(call, across.Local(get_args), 5), ((5, ), {}))
+
+    def test_local_with_builtin_func(self):
+        with make_connection() as conn:
+            self.assertEqual(conn.call(call, across.Local(max), 5, 10), 10)
 
 
 class Empty(object):
