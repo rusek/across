@@ -81,9 +81,8 @@ _conn_tls = _ConnTls()
 
 
 class _Actor:
-    def __init__(self, id, conn):
+    def __init__(self, id):
         self.id = id
-        self.__conn = conn
         self.__lock = threading.Lock()
         self.__condition = threading.Condition(self.__lock)
         self.__task = None
@@ -195,11 +194,11 @@ class Connection:
         self.__tls = threading.local()
         self.__actor_threads = []
 
-        self.__sender_thread.start()
-        self.__receiver_thread.start()
-
         self.__objs = {}
         self.__obj_counter = 0
+
+        self.__sender_thread.start()
+        self.__receiver_thread.start()
 
     def _get_obj(self, id):
         return self.__objs[id]
@@ -250,7 +249,7 @@ class Connection:
         except AttributeError:
             actor_id = self.__next_actor_id
             self.__next_actor_id += 2
-            actor = self.__actors[actor_id] = self.__tls.actor = _Actor(actor_id, self)
+            actor = self.__actors[actor_id] = self.__tls.actor = _Actor(actor_id)
             return actor
 
     def call(*args, **kwargs):
@@ -382,7 +381,7 @@ class Connection:
         if actor is None:
             if not actor_id & 1:
                 raise ProtocolError('Actor not found: %d' % (actor_id, ))
-            actor = self.__actors[actor_id] = _Actor(actor_id, self)
+            actor = self.__actors[actor_id] = _Actor(actor_id)
             actor_thread = _ActorThread(actor, self.__tls)
             self.__actor_threads.append(actor_thread)
             actor_thread.start()
