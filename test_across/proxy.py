@@ -1,6 +1,9 @@
 import unittest
 import across
 import copy
+import weakref
+import gc
+import threading
 from .utils import make_connection, Box
 
 
@@ -87,6 +90,31 @@ class ProxyTestCase(unittest.TestCase):
     def test_local_with_builtin_func(self):
         with make_connection() as conn:
             self.assertEqual(conn.call(call, across.Local(max), 5, 10), 10)
+
+
+class ProxyDelTestCase(unittest.TestCase):
+    def test_del(self):
+        with make_connection() as conn:
+            obj_weakref = Box()
+
+            def create_remotely():
+                obj = Counter()
+                obj_weakref.value = weakref.ref(obj)
+                return across.Local(obj)
+            proxy = conn.call(Box(create_remotely))
+            self.assertIsInstance(proxy, across.Proxy)
+            self.assertIsNotNone(obj_weakref())
+
+            proxy = None
+            self.__collect(conn)
+            self.assertIsNone(obj_weakref())
+
+    def __collect(self, conn):
+        gc.collect()
+        # wait for utility thread to process all tasks
+        event = threading.Event()
+        across._call_elsewhere(event.set)
+        event.wait()
 
 
 class Empty(object):

@@ -1,5 +1,7 @@
 import across
 import threading
+import io
+import sys
 
 
 class _MemoryPipe:
@@ -141,3 +143,19 @@ def par(*funcs):
     for thread in threads:
         thread.join()
     return tuple(thread.get_value() for thread in threads)
+
+
+class StderrCollector:
+    def __init__(self):
+        self.__stderr = io.StringIO()
+        self.__orig_stderr = None
+
+    def getvalue(self):
+        return self.__stderr.getvalue()
+
+    def __enter__(self):
+        self.__orig_stderr = sys.stderr
+        sys.stderr = self.__stderr
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        sys.stderr = self.__orig_stderr

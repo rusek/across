@@ -7,6 +7,8 @@ import select
 import sys
 import os
 import types
+import atexit
+import traceback
 
 
 _version = (0, 1, 0)
@@ -209,6 +211,9 @@ class Connection:
             self.__obj_counter += 1
         self.__objs[id] = obj
         return id
+
+    def _del_obj(self, id):
+        del self.__objs[id]
 
     def __enter__(self):
         return self
@@ -494,6 +499,110 @@ class Connection:
         return self.call(Local, value)
 
 
+# Synchronized queue implementation that can be safely used from within __del__ methods, as opposed to
+# queue.Queue (https://bugs.python.org/issue14976). In Python 3.7, queue.SimpleQueue can be used instead.
+#
+# This class was written with CPython in mind, and may not work correctly with other Python implementations.
+class _SimpleQueue:
+    def __init__(self):
+        self.__lock = threading.Lock()
+        self.__waiter = threading.Lock()
+        self.__items = collections.deque()
+
+        # Create bound method objects for later use in get()/put() - creating such objects may trigger GC,
+        # which must not happen inside get()/put(). These methods are all written in C, and are expected not to
+        # allocate GC memory internally (e.g. with PyObject_GC_New).
+        self.__lock_acquire = self.__lock.acquire
+        self.__lock_release = self.__lock.release
+        self.__waiter_acquire = self.__waiter.acquire
+        self.__waiter_release = self.__waiter.release
+        self.__items_popleft = self.__items.popleft
+        self.__items_append = self.__items.append
+
+        self.__waiter_acquire()
+
+    # Wait until a queue becomes non-empty, and retrieve a single element from the queue. This function may be
+    # called only from a single thread at a time.
+    def get(self):
+        self.__waiter_acquire()
+        self.__lock_acquire()
+        item = self.__items_popleft()
+        if self.__items:
+            self.__waiter_release()
+        self.__lock_release()
+        return item
+
+    # Insert a single element at the end of the queue. This method may be safely called from multiple threads,
+    # and from __del__ methods.
+    def put(self, item):
+        self.__lock_acquire()
+        if not self.__items:
+            self.__waiter_release()
+        self.__items_append(item)
+        self.__lock_release()
+
+
+# Class responsible for executing arbitrary functions on a dedicated worker thread.
+class _ElsewhereExecutor:
+    def __init__(self):
+        self.__queue = _SimpleQueue()
+        self.__startable = True
+        self.__lock = threading.Lock()
+        self.__thread = None
+        self.__closing = False
+
+    # Execute a given function on a worker thread. This method may be safely used from __del__ methods. If shutdown()
+    # method is called, there is no guarantee that submitted functions get executed.
+    def submit(self, func, *args):
+        self.__queue.put((func, args))
+        if self.__startable:
+            self.__startable = False
+            # Important: below code may trigger GC, which in turn may call submit() method again. If submit()
+            # is called again, we must not reach this point. This is why self.__startable guard is necessary.
+            with self.__lock:
+                if self.__thread is None and not self.__closing:
+                    self.__thread = threading.Thread(target=self.__thread_main, daemon=True)
+                    self.__thread.start()
+
+    # Stop worker thread. This method must be explicitly called to avoid unexpected errors during interpreter shutdown.
+    def shutdown(self):
+        self.__queue.put(None)
+        self.__startable = False
+        with self.__lock:
+            # Important: below code may trigger GC, which in turn may call submit() method. Is is vital that
+            # submit() does not try to acquire lock again - this is why self.__startable is set to False before
+            # acquriring self.__lock.
+            self.__closing = True
+            if self.__thread is not None:
+                self.__thread.join()
+                self.__thread = None
+
+    def __thread_main(self):
+        for func, args in iter(self.__queue.get, None):
+            try:
+                func(*args)
+            except:
+                # based on PyErr_WriteUnraisable
+                try:
+                    print('Exception ignored in: {!r}'.format(func), file=sys.stderr)
+                    traceback.print_exc()
+                except:
+                    pass
+
+
+_elsewhere_executor = _ElsewhereExecutor()
+atexit.register(_elsewhere_executor.shutdown)
+
+_call_elsewhere = _elsewhere_executor.submit
+
+
+def _call_del_obj(conn, obj_id):
+    try:
+        conn.call(_del_obj, obj_id)
+    except DisconnectError:
+        pass
+
+
 class Proxy(object):
     def __init__(self, id):
         self._Proxy__conn = get_connection()
@@ -507,6 +616,9 @@ class Proxy(object):
         if conn is not self._Proxy__conn:
             raise ValueError
         return _get_obj, (self.__id, )
+
+    def __del__(self):
+        _call_elsewhere(_call_del_obj, self._Proxy__conn, self.__id)
 
 
 _proxy_types = {}
@@ -557,6 +669,10 @@ def _apply_method(obj, name, args, kwargs):
 
 def _get_obj(id):
     return get_connection()._get_obj(id)
+
+
+def _del_obj(id):
+    return get_connection()._del_obj(id)
 
 
 def _apply_local(func, args, kwargs):
