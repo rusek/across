@@ -78,6 +78,8 @@ class ProcessChannel(PipeChannel):
 class _ConnTls(threading.local):
     def __init__(self):
         self.conn = None
+        self.pickling = False
+
 
 _conn_tls = _ConnTls()
 
@@ -161,14 +163,17 @@ _message_types = frozenset([
 
 
 class _ConnScope(object):
-    def __init__(self, conn):
+    def __init__(self, conn, pickling=False):
         self.__conn = conn
+        self.__pickling = pickling
 
     def __enter__(self):
         _conn_tls.conn, self.__conn = self.__conn,  _conn_tls.conn
+        _conn_tls.pickling, self.__pickling = self.__pickling, _conn_tls.pickling
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         _conn_tls.conn = self.__conn
+        _conn_tls.pickling = self.__pickling
 
 
 _greeting_magic = 0x02393e73
@@ -279,7 +284,7 @@ class Connection:
         return actor.run()
 
     def __pickle(self, obj):
-        with _ConnScope(self):
+        with _ConnScope(self, pickling=True):
             try:
                 return pickle.dumps(obj)
             except Exception as error:
@@ -612,9 +617,12 @@ class Proxy(object):
         return self._Proxy__conn.call(_get_obj, self.__id)
 
     def __reduce__(self):
-        conn = get_connection()
+        if not _conn_tls.pickling:
+            raise RuntimeError("Only 'across.Connection' objects can pickle 'across.Proxy' objects")
+        conn = _conn_tls.conn
         if conn is not self._Proxy__conn:
-            raise ValueError
+            raise RuntimeError("Proxy {!r} can only be pickled by {!r} connection, not {!r}".format(
+                self, self._Proxy__conn, conn))
         return _get_obj, (self.__id, )
 
     def __del__(self):
@@ -653,7 +661,9 @@ class Local(object):
 
     def __reduce__(self):
         cls = type(self.value)
-        return _make_proxy, (_types_to_names.get(cls, cls), get_connection()._put_obj(self.value))
+        if not _conn_tls.pickling:
+            raise RuntimeError("Only 'across.Connection' objects can pickle 'across.Local' objects")
+        return _make_proxy, (_types_to_names.get(cls, cls), _conn_tls.conn._put_obj(self.value))
 
 
 _names_to_types = {

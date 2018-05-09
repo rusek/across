@@ -1,4 +1,5 @@
 import unittest
+import pickle
 import across
 import copy
 import weakref
@@ -16,6 +17,19 @@ class Counter(object):
 
     def add(self, value):
         self.__value += value
+
+
+def nop(*args, **kwargs):
+    pass
+
+
+class OnPickle:
+    def __init__(self, on_pickle):
+        self.__on_pickle = on_pickle
+
+    def __reduce__(self):
+        self.__on_pickle()
+        return nop, ()
 
 
 def get_args(*args, **kwargs):
@@ -90,6 +104,32 @@ class ProxyTestCase(unittest.TestCase):
     def test_local_with_builtin_func(self):
         with make_connection() as conn:
             self.assertEqual(conn.call(call, across.Local(max), 5, 10), 10)
+
+    def test_pickling_local_remotely(self):
+        def func():
+            pickle.dumps(across.Local(None))
+
+        with make_connection() as conn:
+            with self.assertRaises(RuntimeError):
+                conn.call(Box(func))
+
+    def test_pickling_proxy_remotely(self):
+        def func(proxy):
+            pickle.dumps(proxy)
+
+        with make_connection() as conn:
+            with self.assertRaises(RuntimeError):
+                conn.call(Box(func), across.Local(None))
+
+    def test_pickling_proxy_for_invalid_connection(self):
+        with make_connection() as conn1, make_connection() as conn2:
+            proxy = conn1.create(list)
+
+            def on_pickle():
+                with self.assertRaises(RuntimeError):
+                    pickle.dumps(proxy)
+
+            conn2.call(nop, OnPickle(on_pickle))
 
 
 class ProxyDelTestCase(unittest.TestCase):
