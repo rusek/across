@@ -124,7 +124,7 @@ class _Actor:
 
 class _ActorThread(threading.Thread):
     def __init__(self, actor, tls):
-        super().__init__()
+        super().__init__(daemon=True)
         self.__actor = actor
         self.__tls = tls
 
@@ -181,14 +181,17 @@ def _get_greeting_frame():
     return struct.pack('>IBIBBBBBB', 11, _GREETING, _greeting_magic, *sys.version_info[:3] + _version)
 
 
+_active_connections = set()
+
+
 class Connection:
     def __init__(self, channel):
         self.__channel = channel
         self.__lock = threading.Lock()
         self.__send_queue = collections.deque([_get_greeting_frame()])
         self.__send_condition = threading.Condition(self.__lock)
-        self.__sender_thread = threading.Thread(target=self.__sender_loop)
-        self.__receiver_thread = threading.Thread(target=self.__receiver_loop)
+        self.__sender_thread = threading.Thread(target=self.__sender_loop, daemon=True)
+        self.__receiver_thread = threading.Thread(target=self.__receiver_loop, daemon=True)
         self.__cancelled = False
         self.__cancel_condition = threading.Condition(self.__lock)
         self.__cancel_error = None
@@ -204,6 +207,8 @@ class Connection:
 
         self.__sender_thread.start()
         self.__receiver_thread.start()
+
+        _active_connections.add(self)
 
     def _get_obj(self, id):
         return self.__objs[id]
@@ -225,6 +230,10 @@ class Connection:
         self.close()
 
     def close(self):
+        try:
+            _active_connections.remove(self)
+        except KeyError:
+            return  # already closed
         self.__cancel()
         self.__sender_thread.join()
         self.__receiver_thread.join()
@@ -506,6 +515,27 @@ class Connection:
         return self.call(Local, value)
 
 
+# based on PyErr_WriteUnraisable
+def _ignore_exception_at(obj):
+    try:
+        print('Exception ignored in: {!r}'.format(obj), file=sys.stderr)
+        traceback.print_exc()
+    except:
+        pass
+
+
+def _shutdown():
+    while _active_connections:
+        conn_close = next(iter(_active_connections)).close
+        try:
+            conn_close()
+        except:
+            _ignore_exception_at(conn_close)
+
+
+atexit.register(_shutdown)
+
+
 def _load_exception(obj):
     if obj is None:
         return None
@@ -658,12 +688,7 @@ class _ElsewhereExecutor:
             try:
                 func(*args)
             except:
-                # based on PyErr_WriteUnraisable
-                try:
-                    print('Exception ignored in: {!r}'.format(func), file=sys.stderr)
-                    traceback.print_exc()
-                except:
-                    pass
+                _ignore_exception_at(func)
 
 
 _elsewhere_executor = _ElsewhereExecutor()

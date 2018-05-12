@@ -1,7 +1,7 @@
 import unittest
 import across
 import threading
-from .utils import make_connection, Box
+from .utils import make_connection, Box, call_process
 
 
 magic = 'abracadabra'
@@ -79,7 +79,6 @@ class SingleThreadedTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 conn.call(Box(func))
 
-
 class BrokenPickle(object):
     def __reduce__(self):
         raise TypeError('%s is not pickleable' % (self.__class__.__name__, ))
@@ -156,3 +155,12 @@ class PicklingExceptionTest(unittest.TestCase):
             with self.assertRaises(across.OperationError):
                 conn.call(Box(func))
             self.assertEqual(conn.call(get_magic), magic)
+
+    def test_shutdown(self):
+        call_process(_test_shutdown)
+
+
+def _test_shutdown():
+    for _ in range(3):
+        conn = make_connection()
+        conn.call(get_args)

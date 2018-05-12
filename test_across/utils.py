@@ -1,6 +1,8 @@
 import across
 import threading
 import io
+import subprocess
+import pickle
 import sys
 
 
@@ -159,3 +161,28 @@ class StderrCollector:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         sys.stderr = self.__orig_stderr
+
+
+def call_process(func, *args, **kwargs):
+    process = subprocess.Popen(
+        [sys.executable, '-c', """
+import pickle, sys
+func, args, kwargs = pickle.load(sys.stdin.buffer)
+try:
+    result = True, func(*args, **kwargs)
+except Exception as exc:
+    result = False, exc
+pickle.dump(result, sys.stdout.buffer)"""],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+    )
+    pickle.dump((func, args, kwargs), process.stdin)
+    process.stdin.flush()
+    success, value = pickle.load(process.stdout)
+    process.stdin.close()
+    process.stdout.close()
+    process.wait()
+    if success:
+        return value
+    else:
+        raise value
