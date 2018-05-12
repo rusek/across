@@ -115,11 +115,9 @@ class _Actor:
 
     def run(self, main=False):
         for func, args in iter(self.__get_task, None):
-            is_result, value = func(*args)
-            if is_result is True:
-                return value
-            elif is_result is False:
-                raise value
+            ret = func(*args)
+            if ret is not None:
+                return ret
         if not main:
             raise DisconnectError
 
@@ -281,7 +279,11 @@ class Connection:
             prefix = struct.pack('>IBQ', len(payload) + 9, _APPLY, actor.id ^ 1)
             self.__send_queue.append(prefix + payload)
             self.__send_condition.notify()
-        return actor.run()
+        success, value = actor.run()
+        if success:
+            return value
+        else:
+            raise value
 
     def __pickle(self, obj):
         with _ConnScope(self, pickling=True):
@@ -406,7 +408,7 @@ class Connection:
                     func, args, kwargs = obj
                     result = func(*args, **kwargs)
                 except Exception as error:
-                    obj = error
+                    obj = _dump_exception(error)
                     msg_type = _ERROR
                 else:
                     obj = result
@@ -421,7 +423,7 @@ class Connection:
             if not self.__cancelled:
                 self.__send_queue.append(msg)
                 self.__send_condition.notify()
-        return None, None
+        return None
 
     def __handle_result_locked(self, msg):
         if len(msg) < 9:
@@ -449,7 +451,7 @@ class Connection:
 
     def __process_error(self, msg):
         try:
-            return False, self.__unpickle(msg[9:])
+            return False, _load_exception(self.__unpickle(msg[9:]))
         except OperationError as error:
             return False, error
 
@@ -502,6 +504,75 @@ class Connection:
 
     def replicate(self, value):
         return self.call(Local, value)
+
+
+def _load_exception(obj):
+    if obj is None:
+        return None
+    exc = obj[0]
+    exc.__context__ = _load_exception(obj[1])
+    exc.__cause__ = _load_exception(obj[3])
+    exc.__suppress_context__ = obj[2]
+    exc.__traceback__ = _load_traceback(obj[4])
+    return exc
+
+
+def _dump_exception(exc):
+    if exc is None:
+        return None
+    return (
+        exc,
+        _dump_exception(exc.__context__),
+        exc.__suppress_context__,
+        _dump_exception(exc.__cause__),
+        _dump_traceback(exc.__traceback__),
+    )
+
+
+def _patched_code_name(code, name):
+    # argument order is described in help(types.CodeType)
+    return types.CodeType(
+        code.co_argcount,
+        code.co_kwonlyargcount,
+        code.co_nlocals,
+        code.co_stacksize,
+        code.co_flags,
+        code.co_code,
+        code.co_consts,
+        code.co_names,
+        code.co_varnames,
+        code.co_filename,
+        name,
+        code.co_firstlineno,
+        code.co_lnotab,
+        code.co_freevars,
+        code.co_cellvars,
+    )
+
+
+def _dump_traceback(tb):
+    result = []
+    while tb is not None:
+        code = tb.tb_frame.f_code
+        result.append((code.co_filename, tb.tb_lineno, code.co_name))
+        tb = tb.tb_next
+    return result
+
+
+def _load_traceback(obj):
+    prev_var = '_e'
+    globs = {prev_var: ZeroDivisionError}
+    for i, (filename, lineno, name) in enumerate(reversed(obj)):
+        this_var = '_%d' % i
+        eval(compile('%sdef %s(): raise %s()' % ('\n' * (lineno - 1), this_var, prev_var), filename, 'exec'), globs)
+        prev_var = this_var
+        func = globs[this_var]
+        func.__code__ = _patched_code_name(func.__code__, name)
+    try:
+        globs[prev_var]()
+    except ZeroDivisionError:
+        globs.clear()
+        return sys.exc_info()[2].tb_next
 
 
 # Synchronized queue implementation that can be safely used from within __del__ methods, as opposed to
