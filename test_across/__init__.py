@@ -10,6 +10,7 @@ from . import (
     elsewhere,
     exception,
     logging,
+    pep8,
 )
 
 
@@ -26,6 +27,7 @@ def load_tests(loader, tests, pattern):
         elsewhere,
         exception,
         logging,
+        pep8,
     ]:
         suite.addTests(loader.loadTestsFromModule(mod))
     return suite
