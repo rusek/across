@@ -9,6 +9,7 @@ from . import (
     greeting,
     elsewhere,
     exception,
+    logging,
 )
 
 
@@ -24,6 +25,7 @@ def load_tests(loader, tests, pattern):
         greeting,
         elsewhere,
         exception,
+        logging,
     ]:
         suite.addTests(loader.loadTestsFromModule(mod))
     return suite
