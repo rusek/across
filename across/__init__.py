@@ -511,8 +511,8 @@ class Connection:
             raise TypeError(msg) from None
         return self.call(_apply_local, func, args[2:], kwargs)
 
-    def replicate(self, value):
-        return self.call(Local, value)
+    def replicate(self, obj):
+        return self.call(Local, obj)
 
 
 # based on PyErr_WriteUnraisable
