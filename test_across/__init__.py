@@ -11,6 +11,7 @@ from . import (
     exception,
     logging,
     pep8,
+    bootstrap,
 )
 
 
@@ -28,6 +29,7 @@ def load_tests(loader, tests, pattern):
         exception,
         logging,
         pep8,
+        bootstrap,
     ]:
         suite.addTests(loader.loadTestsFromModule(mod))
     return suite

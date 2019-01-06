@@ -9,6 +9,7 @@ import os
 import types
 import atexit
 import traceback
+import fcntl
 
 
 _version = (0, 1, 0)
@@ -31,17 +32,25 @@ class Channel:
 
 class PipeChannel(Channel):
     def __init__(self, stdin, stdout):
+        stdout.flush()
+        fcntl.fcntl(stdin, fcntl.F_SETFL, fcntl.fcntl(stdin, fcntl.F_GETFL) | os.O_NONBLOCK)
         self.__stdin = stdin
-        self.__stdin_fd = stdin.fileno()
         self.__stdout = stdout
         self.__stdout_fd = stdout.fileno()
         self.__shutdown_rfd, self.__shutdown_wfd = os.pipe()
 
     def recv(self, size):
-        readable_fds, _, _ = select.select([self.__stdin_fd, self.__shutdown_rfd], [], [])
+        data = self.__stdin.read(size)
+        if data is not None:
+            return data
+
+        readable_fds, _, _ = select.select([self.__stdin, self.__shutdown_rfd], [], [])
         if self.__shutdown_rfd in readable_fds:
             return None
-        return os.read(self.__stdin_fd, size)
+
+        data = self.__stdin.read(size)
+        assert data is not None
+        return data
 
     def send(self, data):
         readable_fds, _, _ = select.select([self.__shutdown_rfd], [self.__stdout_fd], [])
@@ -58,6 +67,13 @@ class PipeChannel(Channel):
 
 
 class ProcessChannel(PipeChannel):
+    @staticmethod
+    def get_bios():
+        to_skip = len(_get_greeting_frame())
+        to_send = struct.pack('>IBI', 5, _GREETING_BOOTSTRAP, _greeting_magic)
+        return ("import sys;i,o=sys.stdin.buffer,sys.stdout.buffer;o.write(%r);o.flush();i.read(%r);"
+                "exec(i.readline())" % (to_send, to_skip))
+
     def __init__(self, args=None):
         if args is None:
             args = [sys.executable, '-m', __name__]
@@ -150,6 +166,7 @@ _APPLY = 1
 _RESULT = 2
 _ERROR = 3
 _OPERATION_ERROR = 4
+_GREETING_BOOTSTRAP = 5
 
 _message_types = frozenset([
     _GREETING,
@@ -157,6 +174,7 @@ _message_types = frozenset([
     _RESULT,
     _ERROR,
     _OPERATION_ERROR,
+    _GREETING_BOOTSTRAP,
 ])
 
 
@@ -188,14 +206,21 @@ class Connection:
     def __init__(self, channel):
         self.__channel = channel
         self.__lock = threading.Lock()
-        self.__send_queue = collections.deque([_get_greeting_frame()])
         self.__send_condition = threading.Condition(self.__lock)
         self.__sender_thread = threading.Thread(target=self.__sender_loop, daemon=True)
         self.__receiver_thread = threading.Thread(target=self.__receiver_loop, daemon=True)
         self.__cancelled = False
+        self.__ready_condition = threading.Condition(self.__lock)
         self.__cancel_condition = threading.Condition(self.__lock)
         self.__cancel_error = None
-        self.__handlers_locked = self.__greeting_handlers_locked
+        if type(self) is _BootstrappedConnection:
+            self.__handlers_locked = self.__ready_handlers_locked
+            self.__ready = True
+            self.__send_queue = collections.deque()
+        else:
+            self.__handlers_locked = self.__greeting_handlers_locked
+            self.__ready = False
+            self.__send_queue = collections.deque([_get_greeting_frame()])
 
         self.__actors = {}
         self.__next_actor_id = 0
@@ -252,6 +277,8 @@ class Connection:
             if self.__cancelled:
                 # TODO should probably set error if not set
                 return
+            self.__ready = True
+            self.__ready_condition.notify_all()
             self.__cancelled = True
             self.__cancel_error = error
             self.__send_condition.notify()
@@ -269,6 +296,10 @@ class Connection:
             actor = self.__actors[actor_id] = self.__tls.actor = _Actor(actor_id)
             return actor
 
+    def __enqueue_send_locked(self, frame):
+        self.__send_queue.append(frame)
+        self.__send_condition.notify()
+
     def call(*args, **kwargs):
         try:
             (self, func), args = args[:2], args[2:]
@@ -282,12 +313,13 @@ class Connection:
         payload = self.__pickle((func, args, kwargs))
 
         with self.__lock:
+            while not self.__ready:
+                self.__ready_condition.wait()
             if self.__cancelled:
                 raise DisconnectError
             actor = self.__get_current_actor_locked()
             prefix = struct.pack('>IBQ', len(payload) + 9, _APPLY, actor.id ^ 1)
-            self.__send_queue.append(prefix + payload)
-            self.__send_condition.notify()
+            self.__enqueue_send_locked(prefix + payload)
         success, value = actor.run()
         if success:
             return value
@@ -393,6 +425,22 @@ class Connection:
                 'Remote python %r is not compatible with local %r' %
                 (python_version, sys.version_info[:3]))
         self.__handlers_locked = self.__ready_handlers_locked
+        self.__ready = True
+        self.__ready_condition.notify_all()
+
+    def __handle_greeting_bootstrap_locked(self, msg):
+        if len(msg) < 5:
+            raise ProtocolError('Incomplete greeting bootstrap message')
+        magic, = struct.unpack_from('>I', msg, 1)
+        if magic != _greeting_magic:
+            raise ProtocolError('Invalid magic number (0x%x != 0x%x)' % (magic, _greeting_magic))
+
+        from ._importer import get_bootstrap_line
+        payload = get_bootstrap_line().encode('ascii')
+        self.__enqueue_send_locked(payload)
+        self.__handlers_locked = self.__ready_handlers_locked
+        self.__ready = True
+        self.__ready_condition.notify_all()
 
     def __handle_apply_locked(self, msg):
         if len(msg) < 9:
@@ -492,6 +540,7 @@ class Connection:
 
     __greeting_handlers_locked = {
         _GREETING: __handle_greeting_locked,
+        _GREETING_BOOTSTRAP: __handle_greeting_bootstrap_locked,
         None: __unexpected_in_greeting_state,
     }
 
@@ -702,6 +751,12 @@ def _call_del_obj(conn, obj_id):
         conn.call(_del_obj, obj_id)
     except DisconnectError:
         pass
+
+
+class _BootstrappedConnection(Connection):
+    def __init__(self, channel, finder):
+        finder.set_connection(self)  # must be done before starting communication threads
+        super(_BootstrappedConnection, self).__init__(channel)
 
 
 class Proxy(object):
