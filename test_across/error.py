@@ -21,7 +21,7 @@ class DisconnectErrorTest(unittest.TestCase):
         conn = across.Connection(channel)
         try:
             with self.assertRaises(across.DisconnectError):
-                conn.call(Box(channel.cancel))
+                conn.call(Box(channel.disconnect))
             with self.assertRaises(across.DisconnectError):
                 conn.call(nop)
         finally:
@@ -31,7 +31,7 @@ class DisconnectErrorTest(unittest.TestCase):
                 pass
 
 
-class ProtocolErrorChannel(across.Channel):
+class ProtocolErrorChannel(across.BlockingChannel):
     def __init__(self, data):
         self.__data = data
 
@@ -40,9 +40,6 @@ class ProtocolErrorChannel(across.Channel):
         return data
 
     def send(self, data):
-        pass
-
-    def cancel(self):
         pass
 
     def close(self):

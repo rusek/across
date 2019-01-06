@@ -16,21 +16,18 @@ _version = (0, 1, 0)
 __version__ = '%d.%d.%d' % _version
 
 
-class Channel:
+class BlockingChannel:
     def recv(self, size):
         raise NotImplementedError
 
     def send(self, data):
         raise NotImplementedError
 
-    def cancel(self):
-        raise NotImplementedError
-
     def close(self):
         raise NotImplementedError
 
 
-class PipeChannel(Channel):
+class PipeChannel(BlockingChannel):
     def __init__(self, stdin, stdout):
         stdout.flush()
         fcntl.fcntl(stdin, fcntl.F_SETFL, fcntl.fcntl(stdin, fcntl.F_GETFL) | os.O_NONBLOCK)
@@ -38,32 +35,35 @@ class PipeChannel(Channel):
         self.__stdout = stdout
         self.__stdout_fd = stdout.fileno()
         self.__shutdown_rfd, self.__shutdown_wfd = os.pipe()
+        self.__recv_lock = threading.Lock()
+        self.__send_lock = threading.Lock()
 
     def recv(self, size):
-        data = self.__stdin.read(size)
-        if data is not None:
+        with self.__recv_lock:
+            data = self.__stdin.read(size)
+            if data is not None:
+                return data
+
+            readable_fds, _, _ = select.select([self.__stdin, self.__shutdown_rfd], [], [])
+            if self.__shutdown_rfd in readable_fds:
+                return None
+
+            data = self.__stdin.read(size)
+            assert data is not None
             return data
 
-        readable_fds, _, _ = select.select([self.__stdin, self.__shutdown_rfd], [], [])
-        if self.__shutdown_rfd in readable_fds:
-            return None
-
-        data = self.__stdin.read(size)
-        assert data is not None
-        return data
-
     def send(self, data):
-        readable_fds, _, _ = select.select([self.__shutdown_rfd], [self.__stdout_fd], [])
-        if readable_fds:
-            return None
-        return os.write(self.__stdout_fd, data)
-
-    def cancel(self):
-        os.write(self.__shutdown_wfd, b'\0')
+        with self.__send_lock:
+            readable_fds, _, _ = select.select([self.__shutdown_rfd], [self.__stdout_fd], [])
+            if readable_fds:
+                return None
+            return os.write(self.__stdout_fd, data)
 
     def close(self):
-        os.close(self.__shutdown_rfd)
-        os.close(self.__shutdown_wfd)
+        os.write(self.__shutdown_wfd, b'\0')
+        with self.__send_lock, self.__recv_lock:
+            os.close(self.__shutdown_rfd)
+            os.close(self.__shutdown_wfd)
 
 
 class ProcessChannel(PipeChannel):
@@ -264,8 +264,6 @@ class Connection:
         self.__receiver_thread.join()
         for actor_thread in self.__actor_threads:
             actor_thread.join()
-        # TODO handle errors
-        self.__channel.close()
         if self.__cancel_error is not None:
             try:
                 raise self.__cancel_error
@@ -285,7 +283,8 @@ class Connection:
             self.__cancel_condition.notify_all()
             for actor in self.__actors.values():
                 actor.cancel()
-            self.__channel.cancel()
+            # TODO handle errors
+            self.__channel.close()
 
     def __get_current_actor_locked(self):
         try:

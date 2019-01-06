@@ -13,20 +13,20 @@ class _MemoryPipe:
         self.__recv_condition = threading.Condition(self.__lock)
         self.__send_data, self.__send_size = None, None
         self.__recv_data, self.__recv_size = None, None
-        self.__cancelled = False
+        self.__closed = False
 
     def send(self, data):
         with self.__lock:
             if self.__send_data is not None or self.__send_size is not None:
                 raise AssertionError('send already in progress')
-            if self.__cancelled:
+            if self.__closed:
                 return None
             if self.__recv_size is not None:
                 self.__recv_data, self.__recv_size = data[:self.__recv_size], None
                 self.__recv_condition.notify()
                 return len(self.__recv_data)
             self.__send_data = data
-            while self.__send_size is None and not self.__cancelled:
+            while self.__send_size is None and not self.__closed:
                 self.__send_condition.wait()
             if self.__send_size is None:
                 return None
@@ -37,7 +37,7 @@ class _MemoryPipe:
         with self.__lock:
             if self.__recv_data is not None or self.__recv_size is not None:
                 raise AssertionError('recv already in progress')
-            if self.__cancelled:
+            if self.__closed:
                 return None
             if self.__send_data is not None:
                 data = self.__send_data[:size]
@@ -45,22 +45,22 @@ class _MemoryPipe:
                 self.__send_condition.notify()
                 return data
             self.__recv_size = size
-            while self.__recv_data is None and not self.__cancelled:
+            while self.__recv_data is None and not self.__closed:
                 self.__recv_condition.wait()
             if self.__recv_data is None:
                 return None
             data, self.__recv_data = self.__recv_data, None
             return data
 
-    def cancel(self):
+    def close(self):
         with self.__lock:
-            self.__cancelled = True
+            self.__closed = True
             self.__send_data, self.__recv_size = None, None
             self.__send_condition.notify()
             self.__recv_condition.notify()
 
 
-class _MemoryPipeChannel(across.Channel):
+class _MemoryPipeChannel(across.BlockingChannel):
     def __init__(self, stdin, stdout):
         self.__stdin = stdin
         self.__stdout = stdout
@@ -71,12 +71,12 @@ class _MemoryPipeChannel(across.Channel):
     def send(self, data):
         return self.__stdout.send(data)
 
-    def cancel(self):
-        self.__stdin.cancel()
-        self.__stdout.cancel()
+    def disconnect(self):
+        self.__stdin.close()
+        self.__stdout.close()
 
     def close(self):
-        pass
+        self.disconnect()
 
 
 class MemoryChannel(_MemoryPipeChannel):
