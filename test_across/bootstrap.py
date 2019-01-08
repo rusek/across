@@ -19,10 +19,24 @@ def boot_connection():
     return across.Connection(chan)
 
 
+def _import_nonexistent(name):
+    try:
+        __import__(name)
+    except ImportError:
+        pass
+    else:
+        raise AssertionError('Importing %s should fail' % (name, ))
+
+
 class BootstrapTest(unittest.TestCase):
     def test_basic(self):
         with boot_connection() as conn:
             self.assertEqual(conn.call(subtract, 5, 2), 3)
+
+    def test_importing_non_existent_module_remotely(self):
+        with boot_connection() as conn:
+            conn.call(_import_nonexistent, 'across_nonexistent')
+            conn.call(_import_nonexistent, 'across.nonexistent.nonexistent')
 
 
 class ImporterTest(unittest.TestCase):

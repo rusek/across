@@ -11,6 +11,8 @@ def _get_loader(fullname):
         spec = importlib.util.find_spec(fullname)
     except ImportError:
         return None
+    if spec is None:
+        return None
     if spec.loader is None:
         raise ValueError('%r.loader is not set' % (spec, ))
     return spec.loader
