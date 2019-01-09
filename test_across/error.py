@@ -2,11 +2,38 @@ import unittest
 import across
 import struct
 import sys
+from concurrent.futures import Future
 from .utils import make_connection, MemoryChannel, Box
 
 
 def nop(*args, **kwargs):
     pass
+
+
+class FirstError(Exception):
+    pass
+
+
+class SecondError(Exception):
+    pass
+
+
+class FailingChannel(across.BlockingChannel):
+    def __init__(self):
+        self.send_future = Future()
+        self.recv_future = Future()
+        self.close_future = Future()
+
+    def send(self, data):
+        self.send_future.result()
+        return len(data)
+
+    def recv(self, size):
+        self.recv_future.result()
+        return b''
+
+    def close(self):
+        self.close_future.result()
 
 
 class DisconnectErrorTest(unittest.TestCase):
@@ -29,6 +56,40 @@ class DisconnectErrorTest(unittest.TestCase):
                 conn.close()
             except OSError:
                 pass
+
+    def test_call_after_cancel(self):
+        conn = make_connection()
+        conn.cancel()
+        with self.assertRaises(across.DisconnectError):
+            conn.call(nop)
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    def test_close_after_cancel(self):
+        conn = make_connection()
+        conn.cancel()
+        with self.assertRaises(across.CancelledError):
+            conn.close()
+
+    def test_recv_exception_is_ignored_after_send_exception(self):
+        chan = FailingChannel()
+        chan.close_future.set_result(None)
+        with self.assertRaises(FirstError):
+            with across.Connection(chan) as conn:
+                chan.send_future.set_exception(FirstError)
+                conn.wait()
+                chan.recv_future.set_exception(SecondError())
+
+    def test_channel_close_exception_is_ignored_after_previous_exception(self):
+        chan = FailingChannel()
+        chan.send_future.set_result(None)
+        chan.recv_future.set_exception(FirstError())
+        chan.close_future.set_exception(SecondError())
+        with self.assertRaises(FirstError):
+            with across.Connection(chan) as conn:
+                conn.wait()
 
 
 class ProtocolErrorChannel(across.BlockingChannel):

@@ -161,6 +161,10 @@ class ProtocolError(Exception):
     pass
 
 
+class CancelledError(Exception):
+    pass
+
+
 _GREETING = 0
 _APPLY = 1
 _RESULT = 2
@@ -252,7 +256,14 @@ class Connection:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        self.close()
+        if exc_type is None:
+            self.close()
+        else:
+            self.__cancel()
+            try:
+                self.close()
+            except Exception:
+                pass
 
     def close(self):
         try:
@@ -270,21 +281,27 @@ class Connection:
             finally:
                 self.__cancel_error = None
 
+    def cancel(self):
+        self.__cancel(CancelledError())
+
     def __cancel(self, error=None):
         with self.__lock:
+            if error is not None and self.__cancel_error is None:
+                self.__cancel_error = error
             if self.__cancelled:
-                # TODO should probably set error if not set
                 return
             self.__ready = True
             self.__ready_condition.notify_all()
             self.__cancelled = True
-            self.__cancel_error = error
             self.__send_condition.notify()
             self.__cancel_condition.notify_all()
             for actor in self.__actors.values():
                 actor.cancel()
-            # TODO handle errors
-            self.__channel.close()
+            try:
+                self.__channel.close()
+            except Exception as error:
+                if self.__cancel_error is None:
+                    self.__cancel_error = error
 
     def __get_current_actor_locked(self):
         try:
@@ -351,10 +368,6 @@ class Connection:
                 self.__sendall(data)
         except Exception as error:
             self.__cancel(error)
-        except:
-            # TODO set error
-            self.__cancel()
-            raise
         else:
             self.__cancel()
 
@@ -405,10 +418,6 @@ class Connection:
                     handler(self, msg)
         except Exception as error:
             self.__cancel(error)
-        except:
-            # TODO set error
-            self.__cancel()
-            raise
         else:
             self.__cancel()
 
