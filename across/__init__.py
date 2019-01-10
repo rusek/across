@@ -248,6 +248,34 @@ class _ConnScope(object):
         _conn_tls.pickling = self.__pickling
 
 
+class _SenderThread(threading.Thread):
+    def __init__(self, framer, cancel_func):
+        super(_SenderThread, self).__init__(daemon=True)
+        self.__framer = framer
+        self.__cancel_func = cancel_func
+        self.__queue = _SimpleQueue()
+
+    def run(self):
+        try:
+            while True:
+                frame, cont = self.__queue.get()
+                if frame:
+                    self.__framer.send_frame(frame)
+                if cont is False:
+                    break
+        except Exception as error:
+            self.__cancel_func(error)
+
+    def send_frame(self, frame):
+        self.__queue.put((frame, None))
+
+    def send_frame_and_stop(self, frame):
+        self.__queue.put((frame, False))
+
+    def stop(self):
+        self.__queue.put((None, False))
+
+
 _greeting_magic = 0x02393e73
 
 
@@ -266,19 +294,17 @@ class Connection:
     def __init__(self, channel):
         self.__framer = _Framer(channel)
         self.__lock = threading.Lock()
-        self.__send_condition = threading.Condition(self.__lock)
-        self.__sender_thread = threading.Thread(target=self.__sender_loop, daemon=True)
+        self.__sender = _SenderThread(self.__framer, cancel_func=self.__cancel)
         self.__receiver_thread = threading.Thread(target=self.__receiver_loop, daemon=True)
         self.__state_condition = threading.Condition(self.__lock)
         self.__cancel_error = None
         if type(self) is _BootstrappedConnection:
             self.__handlers_locked = self.__ready_handlers_locked
             self.__state = _RUNNING
-            self.__send_queue = collections.deque()
         else:
             self.__handlers_locked = self.__greeting_handlers_locked
             self.__state = _STARTING
-            self.__send_queue = collections.deque([(_get_greeting_frame(), None)])
+            self.__sender.send_frame(_get_greeting_frame())
 
         self.__actors = {}
         self.__next_actor_id = 0
@@ -353,10 +379,9 @@ class Connection:
             self.__state = _STOPPING
             self.__state_condition.notify_all()
             if self.__cancel_error is None:
-                frame = struct.pack('>B', _GOODBYE)
+                self.__sender.send_frame_and_stop(struct.pack('>B', _GOODBYE))
             else:
-                frame = b''
-            self.__enqueue_send_frame_locked(frame, False)
+                self.__sender.stop()
             for actor in self.__actors.values():
                 actor.cancel()
 
@@ -368,10 +393,6 @@ class Connection:
             self.__next_actor_id += 2
             actor = self.__actors[actor_id] = self.__tls.actor = _Actor(actor_id)
             return actor
-
-    def __enqueue_send_frame_locked(self, frame, cont=None):
-        self.__send_queue.append((frame, cont))
-        self.__send_condition.notify()
 
     def call(*args, **kwargs):
         try:
@@ -392,7 +413,7 @@ class Connection:
                 raise DisconnectError
             actor = self.__get_current_actor_locked()
             prefix = struct.pack('>BQ', _APPLY, actor.id ^ 1)
-            self.__enqueue_send_frame_locked(prefix + payload)
+            self.__sender.send_frame(prefix + payload)
         success, value = actor.run()
         if success:
             return value
@@ -413,29 +434,15 @@ class Connection:
             except Exception as error:
                 raise OperationError('Unpickling failed: %s' % (error, ))
 
-    def __sender_loop(self):
-        try:
-            while True:
-                with self.__lock:
-                    while not self.__send_queue:
-                        self.__send_condition.wait()
-                    frame, cont = self.__send_queue.popleft()
-                if frame:
-                    self.__framer.send_frame(frame)
-                if cont is False:
-                    break
-        except Exception as error:
-            self.__cancel(error)
-
     def __receiver_loop(self):
-        self.__sender_thread.start()
+        self.__sender.start()
 
         try:
             self.__receive_msgs()
         except Exception as error:
             self.__cancel(error)
 
-        self.__sender_thread.join()
+        self.__sender.join()
 
         try:
             self.__framer.close()
@@ -481,7 +488,7 @@ class Connection:
 
         from ._importer import get_bootstrap_line
         payload = get_bootstrap_line().encode('ascii')
-        self.__enqueue_send_frame_locked(payload)
+        self.__sender.send_frame(payload)
         self.__handlers_locked = self.__ready_handlers_locked
         self.__state = _RUNNING
         self.__state_condition.notify_all()
@@ -522,8 +529,7 @@ class Connection:
             msg_type = _OPERATION_ERROR
 
         msg = struct.pack('>BQ', msg_type, actor_id ^ 1) + payload
-        with self.__lock:
-            self.__enqueue_send_frame_locked(msg)
+        self.__sender.send_frame(msg)
         return None
 
     def __handle_result_locked(self, msg):
