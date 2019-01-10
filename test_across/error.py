@@ -116,22 +116,23 @@ class ProtocolErrorChannel(across.Channel):
 class ProtocolErrorTest(unittest.TestCase):
     def __simulate_error(self, data, prepend_greeting=True):
         if prepend_greeting:
-            data = across._get_greeting_frame() + data
+            greeting_frame = across._get_greeting_frame()
+            data = struct.pack('>I', len(greeting_frame)) + greeting_frame + data
         with across.Connection(ProtocolErrorChannel(data)) as conn:
             conn.wait()
 
     def test_incomplete_msg_size(self):
-        with self.assertRaisesRegex(across.ProtocolError, 'Incomplete message size'):
+        with self.assertRaisesRegex(across.ProtocolError, 'Incomplete frame size'):
             self.__simulate_error(b'\0\0\0')
 
     def test_empty_msg(self):
-        with self.assertRaisesRegex(across.ProtocolError, 'Empty message'):
+        with self.assertRaisesRegex(across.ProtocolError, 'Empty frame'):
             self.__simulate_error(struct.pack('>I', 0))
 
     def test_incomplete_msg(self):
-        with self.assertRaisesRegex(across.ProtocolError, 'Incomplete message'):
+        with self.assertRaisesRegex(across.ProtocolError, 'Incomplete frame'):
             self.__simulate_error(struct.pack('>I', 10))
-        with self.assertRaisesRegex(across.ProtocolError, 'Incomplete message'):
+        with self.assertRaisesRegex(across.ProtocolError, 'Incomplete frame'):
             self.__simulate_error(struct.pack('>I', 10) + b'abc')
 
     def test_invalid_msg_type(self):

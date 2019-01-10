@@ -74,7 +74,7 @@ class PipeChannel(Channel):
 class ProcessChannel(PipeChannel):
     @staticmethod
     def get_bios():
-        to_skip = len(_get_greeting_frame())
+        to_skip = len(_get_greeting_frame()) + 8
         to_send = struct.pack('>IBI', 5, _GREETING_BOOTSTRAP, _greeting_magic)
         return ("import sys;i,o=sys.stdin.buffer,sys.stdout.buffer;o.write(%r);o.flush();i.read(%r);"
                 "exec(i.readline())" % (to_send, to_skip))
@@ -94,6 +94,51 @@ class ProcessChannel(PipeChannel):
         retcode = self.__process.wait()
         if retcode:
             raise subprocess.CalledProcessError(retcode, self.__args)
+
+
+class _Framer:
+    def __init__(self, channel):
+        self.__channel = channel
+
+    def send_frame(self, frame):
+        self.__sendall(struct.pack('>I', len(frame)) + frame)
+
+    def __sendall(self, data):
+        while data:
+            size = self.__channel.send(data)
+            assert size > 0
+            data = data[size:]
+
+    def recv_frame(self):
+        header = self.__recvall(4)
+        if len(header) != 4:
+            raise ProtocolError('Incomplete frame size')
+        size, = struct.unpack('>I', header)
+        if size == 0:
+            raise ProtocolError('Empty frame')
+        frame = self.__recvall(size)
+        if len(frame) != size:
+            raise ProtocolError('Incomplete frame')
+        return frame
+
+    def __recvall(self, size):
+        data = b''
+        while size:
+            chunk = self.__channel.recv(size)
+            if not chunk:
+                return data
+            data += chunk
+            size -= len(chunk)
+        return data
+
+    def cancel(self):
+        try:
+            self.__channel.cancel()
+        except Exception:
+            _ignore_exception_at(self.__channel)
+
+    def close(self):
+        self.__channel.close()
 
 
 class _ConnTls(threading.local):
@@ -207,7 +252,7 @@ _greeting_magic = 0x02393e73
 
 
 def _get_greeting_frame():
-    return struct.pack('>IBIBBBBBB', 11, _GREETING, _greeting_magic, *sys.version_info[:3] + _version)
+    return struct.pack('>BIBBBBBB', _GREETING, _greeting_magic, *sys.version_info[:3] + _version)
 
 
 _active_connections = set()
@@ -219,7 +264,7 @@ _STOPPING = 2
 
 class Connection:
     def __init__(self, channel):
-        self.__channel = channel
+        self.__framer = _Framer(channel)
         self.__lock = threading.Lock()
         self.__send_condition = threading.Condition(self.__lock)
         self.__sender_thread = threading.Thread(target=self.__sender_loop, daemon=True)
@@ -301,20 +346,17 @@ class Connection:
             if self.__cancel_error is None:
                 self.__cancel_error = error
                 self.__set_stopping_locked()
-                try:
-                    self.__channel.cancel()
-                except Exception:
-                    _ignore_exception_at(self.__channel)
+                self.__framer.cancel()
 
     def __set_stopping_locked(self):
         if self.__state in (_STARTING, _RUNNING):
             self.__state = _STOPPING
             self.__state_condition.notify_all()
             if self.__cancel_error is None:
-                frame = struct.pack('>IB', 1, _GOODBYE)
+                frame = struct.pack('>B', _GOODBYE)
             else:
                 frame = b''
-            self.__enqueue_send_locked(frame, False)
+            self.__enqueue_send_frame_locked(frame, False)
             for actor in self.__actors.values():
                 actor.cancel()
 
@@ -327,7 +369,7 @@ class Connection:
             actor = self.__actors[actor_id] = self.__tls.actor = _Actor(actor_id)
             return actor
 
-    def __enqueue_send_locked(self, frame, cont=None):
+    def __enqueue_send_frame_locked(self, frame, cont=None):
         self.__send_queue.append((frame, cont))
         self.__send_condition.notify()
 
@@ -349,8 +391,8 @@ class Connection:
             if self.__state != _RUNNING:
                 raise DisconnectError
             actor = self.__get_current_actor_locked()
-            prefix = struct.pack('>IBQ', len(payload) + 9, _APPLY, actor.id ^ 1)
-            self.__enqueue_send_locked(prefix + payload)
+            prefix = struct.pack('>BQ', _APPLY, actor.id ^ 1)
+            self.__enqueue_send_frame_locked(prefix + payload)
         success, value = actor.run()
         if success:
             return value
@@ -377,28 +419,13 @@ class Connection:
                 with self.__lock:
                     while not self.__send_queue:
                         self.__send_condition.wait()
-                    data, cont = self.__send_queue.popleft()
-                self.__sendall(data)
+                    frame, cont = self.__send_queue.popleft()
+                if frame:
+                    self.__framer.send_frame(frame)
                 if cont is False:
                     break
         except Exception as error:
             self.__cancel(error)
-
-    def __sendall(self, data):
-        while data:
-            size = self.__channel.send(data)
-            assert size > 0
-            data = data[size:]
-
-    def __recvall(self, size):
-        data = b''
-        while size:
-            chunk = self.__channel.recv(size)
-            if not chunk:
-                return data
-            data += chunk
-            size -= len(chunk)
-        return data
 
     def __receiver_loop(self):
         self.__sender_thread.start()
@@ -411,21 +438,13 @@ class Connection:
         self.__sender_thread.join()
 
         try:
-            self.__channel.close()
+            self.__framer.close()
         except Exception as error:
             self.__cancel(error)
 
     def __receive_msgs(self):
         while True:
-            header = self.__recvall(4)
-            if len(header) != 4:
-                raise ProtocolError('Incomplete message size')
-            size, = struct.unpack('>I', header)
-            if size == 0:
-                raise ProtocolError('Empty message')
-            msg = self.__recvall(size)
-            if len(msg) != size:
-                raise ProtocolError('Incomplete message')
+            msg = self.__framer.recv_frame()
             with self.__lock:
                 if self.__cancel_error is not None:
                     break
@@ -462,7 +481,7 @@ class Connection:
 
         from ._importer import get_bootstrap_line
         payload = get_bootstrap_line().encode('ascii')
-        self.__enqueue_send_locked(payload)
+        self.__enqueue_send_frame_locked(payload)
         self.__handlers_locked = self.__ready_handlers_locked
         self.__state = _RUNNING
         self.__state_condition.notify_all()
@@ -502,9 +521,9 @@ class Connection:
             payload = str(error).encode('utf-8', errors='replace')
             msg_type = _OPERATION_ERROR
 
-        msg = struct.pack('>IBQ', len(payload) + 9, msg_type, actor_id ^ 1) + payload
+        msg = struct.pack('>BQ', msg_type, actor_id ^ 1) + payload
         with self.__lock:
-            self.__enqueue_send_locked(msg)
+            self.__enqueue_send_frame_locked(msg)
         return None
 
     def __handle_result_locked(self, msg):
