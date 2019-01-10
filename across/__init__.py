@@ -613,10 +613,10 @@ class Connection:
             else:
                 msg = "create() missing 1 required positional argument: 'func'"
             raise TypeError(msg) from None
-        return self.call(_apply_local, func, args[2:], kwargs)
+        return self.call(_apply_ref, func, args[2:], kwargs)
 
     def replicate(self, obj):
-        return self.call(Local, obj)
+        return self.call(ref, obj)
 
 
 # based on PyErr_WriteUnraisable
@@ -860,16 +860,20 @@ def _make_auto_proxy_type(cls):
     return scope['_AutoProxy']
 
 
-class Local(object):
+class Reference(object):
     def __init__(self, value):
-        assert not isinstance(value, (Proxy, Local))
+        assert not isinstance(value, (Proxy, Reference))
         self.value = value
 
     def __reduce__(self):
         cls = type(self.value)
         if not _conn_tls.pickling:
-            raise RuntimeError("Only 'across.Connection' objects can pickle 'across.Local' objects")
+            raise RuntimeError("Only 'across.Connection' objects can pickle 'across.Reference' objects")
         return _make_proxy, (_types_to_names.get(cls, cls), _conn_tls.conn._put_obj(self.value))
+
+
+def ref(obj):
+    return Reference(obj)
 
 
 _names_to_types = {
@@ -891,8 +895,8 @@ def _del_obj(id):
     return get_connection()._del_obj(id)
 
 
-def _apply_local(func, args, kwargs):
-    return Local(func(*args, **kwargs))
+def _apply_ref(func, args, kwargs):
+    return ref(func(*args, **kwargs))
 
 
 def _make_proxy(cls, id):

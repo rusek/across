@@ -87,27 +87,27 @@ class ProxyTestCase(unittest.TestCase):
             orig.add(1)
             self.assertEqual(proxy.get(), 0)
 
-    def test_local(self):
+    def test_ref(self):
         with make_connection() as conn:
-            proxy = conn.call(Box(lambda: across.Local(5)))
+            proxy = conn.call(Box(lambda: across.ref(5)))
             self.assertIsInstance(proxy, across.Proxy)
             self.assertEqual(copy.deepcopy(proxy), 5)
 
-    def test_local_with_lambda(self):
+    def test_ref_with_lambda(self):
         with make_connection() as conn:
-            self.assertEqual(conn.call(call, across.Local(lambda: 5)), 5)
+            self.assertEqual(conn.call(call, across.ref(lambda: 5)), 5)
 
-    def test_local_with_func(self):
+    def test_ref_with_func(self):
         with make_connection() as conn:
-            self.assertEqual(conn.call(call, across.Local(get_args), 5), ((5, ), {}))
+            self.assertEqual(conn.call(call, across.ref(get_args), 5), ((5, ), {}))
 
-    def test_local_with_builtin_func(self):
+    def test_ref_with_builtin_func(self):
         with make_connection() as conn:
-            self.assertEqual(conn.call(call, across.Local(max), 5, 10), 10)
+            self.assertEqual(conn.call(call, across.ref(max), 5, 10), 10)
 
-    def test_pickling_local_remotely(self):
+    def test_pickling_ref_remotely(self):
         def func():
-            pickle.dumps(across.Local(None))
+            pickle.dumps(across.ref(None))
 
         with make_connection() as conn:
             with self.assertRaises(RuntimeError):
@@ -119,7 +119,7 @@ class ProxyTestCase(unittest.TestCase):
 
         with make_connection() as conn:
             with self.assertRaises(RuntimeError):
-                conn.call(Box(func), across.Local(None))
+                conn.call(Box(func), across.ref(None))
 
     def test_pickling_proxy_for_invalid_connection(self):
         with make_connection() as conn1, make_connection() as conn2:
@@ -140,7 +140,7 @@ class ProxyDelTestCase(unittest.TestCase):
             def create_remotely():
                 obj = Counter()
                 obj_weakref.value = weakref.ref(obj)
-                return across.Local(obj)
+                return across.ref(obj)
             proxy = conn.call(Box(create_remotely))
             self.assertIsInstance(proxy, across.Proxy)
             self.assertIsNotNone(obj_weakref())

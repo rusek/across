@@ -56,7 +56,7 @@ Core functionality
 
 .. class:: Proxy
 
-    Proxies act as references to objects living in remote Python processes. All method calls on a proxy are
+    Proxies act as handles to objects living in remote Python processes. All method calls on a proxy are
     forwarded to a remote object, and executed there.
 
     Example:
@@ -91,15 +91,15 @@ Core functionality
     * container special methods: ``__len__``, ``__contains__``, ``__getitem__``, ``__setitem__``, ``__delitem__``;
     * ``__call__``.
 
-.. class:: Local
+.. function:: ref(obj)
 
-    Marker for an object indicating that wrapped object should be passed to / returned from a remote process
+    Wrap a given object in a special marker indicating that the object should be passed / returned to a remote process
     as a proxy.
 
     .. code-block:: python
 
         def create_list():
-            return Local([])
+            return ref([])
 
         remote_cheeses = conn.call(create_list)
         remote_cheeses.append('gorgonzola')
@@ -110,8 +110,12 @@ Core functionality
             cheeses.append('feta')
 
         local_cheeses = []
-        conn.call(append_feta, Local(local_cheeses))
+        conn.call(append_feta, ref(local_cheeses))
 
+
+.. class:: Reference
+
+    Type of objects returned by :func:`ref` function.
 
 .. function:: get_connection()
 
