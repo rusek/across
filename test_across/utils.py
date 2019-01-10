@@ -20,7 +20,7 @@ class _MemoryPipe:
             if self.__send_data is not None or self.__send_size is not None:
                 raise AssertionError('send already in progress')
             if self.__closed:
-                return None
+                raise ValueError
             if self.__recv_size is not None:
                 self.__recv_data, self.__recv_size = data[:self.__recv_size], None
                 self.__recv_condition.notify()
@@ -29,7 +29,7 @@ class _MemoryPipe:
             while self.__send_size is None and not self.__closed:
                 self.__send_condition.wait()
             if self.__send_size is None:
-                return None
+                raise ValueError
             size, self.__send_size = self.__send_size, None
             return size
 
@@ -38,7 +38,7 @@ class _MemoryPipe:
             if self.__recv_data is not None or self.__recv_size is not None:
                 raise AssertionError('recv already in progress')
             if self.__closed:
-                return None
+                raise ValueError
             if self.__send_data is not None:
                 data = self.__send_data[:size]
                 self.__send_data, self.__send_size = None, len(data)
@@ -48,7 +48,7 @@ class _MemoryPipe:
             while self.__recv_data is None and not self.__closed:
                 self.__recv_condition.wait()
             if self.__recv_data is None:
-                return None
+                raise ValueError
             data, self.__recv_data = self.__recv_data, None
             return data
 
@@ -60,7 +60,7 @@ class _MemoryPipe:
             self.__recv_condition.notify()
 
 
-class _MemoryPipeChannel(across.BlockingChannel):
+class _MemoryPipeChannel(across.Channel):
     def __init__(self, stdin, stdout):
         self.__stdin = stdin
         self.__stdout = stdout
@@ -71,12 +71,12 @@ class _MemoryPipeChannel(across.BlockingChannel):
     def send(self, data):
         return self.__stdout.send(data)
 
-    def disconnect(self):
+    def cancel(self):
         self.__stdin.close()
         self.__stdout.close()
 
     def close(self):
-        self.disconnect()
+        pass
 
 
 class MemoryChannel(_MemoryPipeChannel):

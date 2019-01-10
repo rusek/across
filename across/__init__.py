@@ -16,18 +16,21 @@ _version = (0, 1, 0)
 __version__ = '%d.%d.%d' % _version
 
 
-class BlockingChannel:
+class Channel:
     def recv(self, size):
         raise NotImplementedError
 
     def send(self, data):
         raise NotImplementedError
 
+    def cancel(self):
+        raise NotImplementedError
+
     def close(self):
         raise NotImplementedError
 
 
-class PipeChannel(BlockingChannel):
+class PipeChannel(Channel):
     def __init__(self, stdin, stdout):
         stdout.flush()
         fcntl.fcntl(stdin, fcntl.F_SETFL, fcntl.fcntl(stdin, fcntl.F_GETFL) | os.O_NONBLOCK)
@@ -35,35 +38,37 @@ class PipeChannel(BlockingChannel):
         self.__stdout = stdout
         self.__stdout_fd = stdout.fileno()
         self.__shutdown_rfd, self.__shutdown_wfd = os.pipe()
-        self.__recv_lock = threading.Lock()
-        self.__send_lock = threading.Lock()
+        self.__close_lock = threading.Lock()
 
     def recv(self, size):
-        with self.__recv_lock:
-            data = self.__stdin.read(size)
-            if data is not None:
-                return data
-
-            readable_fds, _, _ = select.select([self.__stdin, self.__shutdown_rfd], [], [])
-            if self.__shutdown_rfd in readable_fds:
-                return None
-
-            data = self.__stdin.read(size)
-            assert data is not None
+        data = self.__stdin.read(size)
+        if data is not None:
             return data
 
+        readable_fds, _, _ = select.select([self.__stdin, self.__shutdown_rfd], [], [])
+        if self.__shutdown_rfd in readable_fds:
+            raise ValueError('recv on cancelled channel')
+
+        data = self.__stdin.read(size)
+        assert data is not None
+        return data
+
     def send(self, data):
-        with self.__send_lock:
-            readable_fds, _, _ = select.select([self.__shutdown_rfd], [self.__stdout_fd], [])
-            if readable_fds:
-                return None
-            return os.write(self.__stdout_fd, data)
+        readable_fds, _, _ = select.select([self.__shutdown_rfd], [self.__stdout_fd], [])
+        if readable_fds:
+            raise ValueError('send on cancelled channel')
+        return os.write(self.__stdout_fd, data)
+
+    def cancel(self):
+        with self.__close_lock:
+            if self.__shutdown_wfd is not None:
+                os.write(self.__shutdown_wfd, b'\0')
 
     def close(self):
-        os.write(self.__shutdown_wfd, b'\0')
-        with self.__send_lock, self.__recv_lock:
+        with self.__close_lock:
             os.close(self.__shutdown_rfd)
             os.close(self.__shutdown_wfd)
+            self.__shutdown_rfd, self.__shutdown_wfd = None, None
 
 
 class ProcessChannel(PipeChannel):
@@ -171,6 +176,7 @@ _RESULT = 2
 _ERROR = 3
 _OPERATION_ERROR = 4
 _GREETING_BOOTSTRAP = 5
+_GOODBYE = 6
 
 _message_types = frozenset([
     _GREETING,
@@ -179,6 +185,7 @@ _message_types = frozenset([
     _ERROR,
     _OPERATION_ERROR,
     _GREETING_BOOTSTRAP,
+    _GOODBYE,
 ])
 
 
@@ -205,6 +212,10 @@ def _get_greeting_frame():
 
 _active_connections = set()
 
+_STARTING = 0
+_RUNNING = 1
+_STOPPING = 2
+
 
 class Connection:
     def __init__(self, channel):
@@ -213,18 +224,16 @@ class Connection:
         self.__send_condition = threading.Condition(self.__lock)
         self.__sender_thread = threading.Thread(target=self.__sender_loop, daemon=True)
         self.__receiver_thread = threading.Thread(target=self.__receiver_loop, daemon=True)
-        self.__cancelled = False
-        self.__ready_condition = threading.Condition(self.__lock)
-        self.__cancel_condition = threading.Condition(self.__lock)
+        self.__state_condition = threading.Condition(self.__lock)
         self.__cancel_error = None
         if type(self) is _BootstrappedConnection:
             self.__handlers_locked = self.__ready_handlers_locked
-            self.__ready = True
+            self.__state = _RUNNING
             self.__send_queue = collections.deque()
         else:
             self.__handlers_locked = self.__greeting_handlers_locked
-            self.__ready = False
-            self.__send_queue = collections.deque([_get_greeting_frame()])
+            self.__state = _STARTING
+            self.__send_queue = collections.deque([(_get_greeting_frame(), None)])
 
         self.__actors = {}
         self.__next_actor_id = 0
@@ -234,7 +243,6 @@ class Connection:
         self.__objs = {}
         self.__obj_counter = 0
 
-        self.__sender_thread.start()
         self.__receiver_thread.start()
 
         _active_connections.add(self)
@@ -259,7 +267,7 @@ class Connection:
         if exc_type is None:
             self.close()
         else:
-            self.__cancel()
+            self.__cancel(Exception())
             try:
                 self.close()
             except Exception:
@@ -270,8 +278,12 @@ class Connection:
             _active_connections.remove(self)
         except KeyError:
             return  # already closed
-        self.__cancel()
-        self.__sender_thread.join()
+
+        with self.__lock:
+            while self.__state == _STARTING:
+                self.__state_condition.wait()
+            self.__set_stopping_locked()
+
         self.__receiver_thread.join()
         for actor_thread in self.__actor_threads:
             actor_thread.join()
@@ -284,24 +296,27 @@ class Connection:
     def cancel(self):
         self.__cancel(CancelledError())
 
-    def __cancel(self, error=None):
+    def __cancel(self, error):
         with self.__lock:
-            if error is not None and self.__cancel_error is None:
+            if self.__cancel_error is None:
                 self.__cancel_error = error
-            if self.__cancelled:
-                return
-            self.__ready = True
-            self.__ready_condition.notify_all()
-            self.__cancelled = True
-            self.__send_condition.notify()
-            self.__cancel_condition.notify_all()
+                self.__set_stopping_locked()
+                try:
+                    self.__channel.cancel()
+                except Exception:
+                    _ignore_exception_at(self.__channel)
+
+    def __set_stopping_locked(self):
+        if self.__state in (_STARTING, _RUNNING):
+            self.__state = _STOPPING
+            self.__state_condition.notify_all()
+            if self.__cancel_error is None:
+                frame = struct.pack('>IB', 1, _GOODBYE)
+            else:
+                frame = b''
+            self.__enqueue_send_locked(frame, False)
             for actor in self.__actors.values():
                 actor.cancel()
-            try:
-                self.__channel.close()
-            except Exception as error:
-                if self.__cancel_error is None:
-                    self.__cancel_error = error
 
     def __get_current_actor_locked(self):
         try:
@@ -312,8 +327,8 @@ class Connection:
             actor = self.__actors[actor_id] = self.__tls.actor = _Actor(actor_id)
             return actor
 
-    def __enqueue_send_locked(self, frame):
-        self.__send_queue.append(frame)
+    def __enqueue_send_locked(self, frame, cont=None):
+        self.__send_queue.append((frame, cont))
         self.__send_condition.notify()
 
     def call(*args, **kwargs):
@@ -329,9 +344,9 @@ class Connection:
         payload = self.__pickle((func, args, kwargs))
 
         with self.__lock:
-            while not self.__ready:
-                self.__ready_condition.wait()
-            if self.__cancelled:
+            while self.__state == _STARTING:
+                self.__state_condition.wait()
+            if self.__state != _RUNNING:
                 raise DisconnectError
             actor = self.__get_current_actor_locked()
             prefix = struct.pack('>IBQ', len(payload) + 9, _APPLY, actor.id ^ 1)
@@ -360,22 +375,19 @@ class Connection:
         try:
             while True:
                 with self.__lock:
-                    while not self.__send_queue and not self.__cancelled:
+                    while not self.__send_queue:
                         self.__send_condition.wait()
-                    if self.__cancelled:
-                        break
-                    data = self.__send_queue.popleft()
+                    data, cont = self.__send_queue.popleft()
                 self.__sendall(data)
+                if cont is False:
+                    break
         except Exception as error:
             self.__cancel(error)
-        else:
-            self.__cancel()
 
     def __sendall(self, data):
         while data:
             size = self.__channel.send(data)
-            if size is None:
-                break
+            assert size > 0
             data = data[size:]
 
     def __recvall(self, size):
@@ -383,43 +395,48 @@ class Connection:
         while size:
             chunk = self.__channel.recv(size)
             if not chunk:
-                if chunk is None:
-                    return None
                 return data
             data += chunk
             size -= len(chunk)
         return data
 
     def __receiver_loop(self):
+        self.__sender_thread.start()
+
         try:
-            while True:
-                header = self.__recvall(4)
-                if not header:
-                    break
-                if len(header) != 4:
-                    raise ProtocolError('Incomplete message size')
-                size, = struct.unpack('>I', header)
-                if size == 0:
-                    raise ProtocolError('Empty message')
-                msg = self.__recvall(size)
-                if msg is None:
-                    break
-                if len(msg) != size:
-                    raise ProtocolError('Incomplete message')
-                with self.__lock:
-                    if self.__cancelled:
-                        break
-                    msg_type = msg[0]
-                    handler = self.__handlers_locked.get(msg_type)
-                    if handler is None:
-                        if msg_type not in _message_types:
-                            raise ProtocolError('Invalid message type: %d' % (msg_type, ))
-                        handler = self.__handlers_locked[None]
-                    handler(self, msg)
+            self.__receive_msgs()
         except Exception as error:
             self.__cancel(error)
-        else:
-            self.__cancel()
+
+        self.__sender_thread.join()
+
+        try:
+            self.__channel.close()
+        except Exception as error:
+            self.__cancel(error)
+
+    def __receive_msgs(self):
+        while True:
+            header = self.__recvall(4)
+            if len(header) != 4:
+                raise ProtocolError('Incomplete message size')
+            size, = struct.unpack('>I', header)
+            if size == 0:
+                raise ProtocolError('Empty message')
+            msg = self.__recvall(size)
+            if len(msg) != size:
+                raise ProtocolError('Incomplete message')
+            with self.__lock:
+                if self.__cancel_error is not None:
+                    break
+                msg_type = msg[0]
+                handler = self.__handlers_locked.get(msg_type)
+                if handler is None:
+                    if msg_type not in _message_types:
+                        raise ProtocolError('Invalid message type: %d' % (msg_type,))
+                    handler = self.__handlers_locked[None]
+                if handler(self, msg) is False:
+                    break
 
     def __handle_greeting_locked(self, msg):
         if len(msg) < 11:
@@ -433,8 +450,8 @@ class Connection:
                 'Remote python %r is not compatible with local %r' %
                 (python_version, sys.version_info[:3]))
         self.__handlers_locked = self.__ready_handlers_locked
-        self.__ready = True
-        self.__ready_condition.notify_all()
+        self.__state = _RUNNING
+        self.__state_condition.notify_all()
 
     def __handle_greeting_bootstrap_locked(self, msg):
         if len(msg) < 5:
@@ -447,10 +464,12 @@ class Connection:
         payload = get_bootstrap_line().encode('ascii')
         self.__enqueue_send_locked(payload)
         self.__handlers_locked = self.__ready_handlers_locked
-        self.__ready = True
-        self.__ready_condition.notify_all()
+        self.__state = _RUNNING
+        self.__state_condition.notify_all()
 
     def __handle_apply_locked(self, msg):
+        if self.__state != _RUNNING:
+            return
         if len(msg) < 9:
             raise ProtocolError('Incomplete apply message')
         actor_id, = struct.unpack_from('>Q', msg, 1)
@@ -485,9 +504,7 @@ class Connection:
 
         msg = struct.pack('>IBQ', len(payload) + 9, msg_type, actor_id ^ 1) + payload
         with self.__lock:
-            if not self.__cancelled:
-                self.__send_queue.append(msg)
-                self.__send_condition.notify()
+            self.__enqueue_send_locked(msg)
         return None
 
     def __handle_result_locked(self, msg):
@@ -529,6 +546,10 @@ class Connection:
             raise ProtocolError('Actor not found: %d' % (actor_id, ))
         actor.submit(self.__process_operation_error, msg)
 
+    def __handle_goodbye_locked(self, msg):
+        self.__set_stopping_locked()
+        return False
+
     def __process_operation_error(self, msg):
         return False, OperationError(msg[9:].decode('utf-8', errors='replace'))
 
@@ -543,6 +564,7 @@ class Connection:
         _RESULT: __handle_result_locked,
         _ERROR: __handle_error_locked,
         _OPERATION_ERROR: __handle_operation_error_locked,
+        _GOODBYE: __handle_goodbye_locked,
         None: __unexpected_in_ready_state,
     }
 
@@ -554,8 +576,8 @@ class Connection:
 
     def wait(self):
         with self.__lock:
-            while not self.__cancelled:
-                self.__cancel_condition.wait()
+            while self.__state in (_STARTING, _RUNNING):
+                self.__state_condition.wait()
 
     def create(*args, **kwargs):
         try:

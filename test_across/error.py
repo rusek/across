@@ -18,7 +18,7 @@ class SecondError(Exception):
     pass
 
 
-class FailingChannel(across.BlockingChannel):
+class FailingChannel(across.Channel):
     def __init__(self):
         self.send_future = Future()
         self.recv_future = Future()
@@ -31,6 +31,9 @@ class FailingChannel(across.BlockingChannel):
     def recv(self, size):
         self.recv_future.result()
         return b''
+
+    def cancel(self):
+        pass
 
     def close(self):
         self.close_future.result()
@@ -48,13 +51,13 @@ class DisconnectErrorTest(unittest.TestCase):
         conn = across.Connection(channel)
         try:
             with self.assertRaises(across.DisconnectError):
-                conn.call(Box(channel.disconnect))
+                conn.call(Box(channel.cancel))
             with self.assertRaises(across.DisconnectError):
                 conn.call(nop)
         finally:
             try:
                 conn.close()
-            except OSError:
+            except Exception:
                 pass
 
     def test_call_after_cancel(self):
@@ -92,7 +95,7 @@ class DisconnectErrorTest(unittest.TestCase):
                 conn.wait()
 
 
-class ProtocolErrorChannel(across.BlockingChannel):
+class ProtocolErrorChannel(across.Channel):
     def __init__(self, data):
         self.__data = data
 
@@ -101,6 +104,9 @@ class ProtocolErrorChannel(across.BlockingChannel):
         return data
 
     def send(self, data):
+        return len(data)
+
+    def cancel(self):
         pass
 
     def close(self):
