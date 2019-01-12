@@ -3,13 +3,9 @@ import across
 import threading
 import gc
 import platform
-import os
-from .utils import StderrCollector
 
 
 SimpleQueue = across._SimpleQueue
-ElsewhereExecutor = across._ElsewhereExecutor
-call_elsewhere = across._call_elsewhere
 
 
 class Garbage:
@@ -93,54 +89,3 @@ class SimpleQueueTest(unittest.TestCase):
         # should be carefully reviewed. The purpose of this test is to detect that someone is trying to use across
         # with other Python implementation, and warn that across._SimpleQueue requires special attention
         self.assertEqual(platform.python_implementation(), 'CPython')
-
-
-class ElsewhereExecutorTest(unittest.TestCase):
-    def test_shutdown_only(self):
-        executor = ElsewhereExecutor()
-        executor.shutdown()
-
-    def test_submit(self):
-        events = [threading.Event() for _ in range(10)]
-        executor = ElsewhereExecutor()
-        for event in events:
-            executor.submit(event.set)
-        for event in events:
-            event.wait()
-        executor.shutdown()
-
-    def test_exceptions_are_ignored(self):
-        def fail():
-            raise Exception('simulated failure')
-        executor = ElsewhereExecutor()
-        event = threading.Event()
-        stderr = StderrCollector()
-        with stderr:
-            executor.submit(fail)
-            executor.submit(event.set)
-            event.wait()
-        executor.shutdown()
-        self.assertIn('simulated failure', stderr.getvalue())
-
-    def test_submit_after_shutdown(self):
-        executor = ElsewhereExecutor()
-        executor.shutdown()
-        executor.submit(lambda: os._exit(1))
-
-    def test_gc_during_submit(self):
-        def nop():
-            pass
-
-        for margin in iter_margins():
-            executor = ElsewhereExecutor()
-            executor_submit = executor.submit
-            test_gc(margin, lambda: executor_submit(nop), lambda: executor_submit(nop))
-
-
-class CallElsewhereTest(unittest.TestCase):
-    def test_call_elsewhere(self):
-        events = [threading.Event() for _ in range(10)]
-        for event in events:
-            call_elsewhere(event.set)
-        for event in events:
-            event.wait()

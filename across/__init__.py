@@ -184,6 +184,7 @@ _RESULT = 2
 _ERROR = 3
 _OPERATION_ERROR = 4
 _GOODBYE = 5
+_DEL_OBJS = 6
 
 
 class _ConnScope(object):
@@ -220,6 +221,7 @@ class _SenderThread(threading.Thread):
 
         self.__queue.put(handler)
 
+    # Important: this function must be reentrant
     def send_frame(self, frame):
         def handler():
             self.__framer.send_frame(frame)
@@ -307,8 +309,13 @@ class Connection:
         self.__objs[id] = obj
         return id
 
-    def _del_obj(self, id):
-        del self.__objs[id]
+    # Important: this function must be reentrant
+    def _del_remote_obj(self, id):
+        msg = _Message()
+        msg.put_uint(_DEL_OBJS)
+        msg.put_uint(1)
+        msg.put_uint(id)
+        self.__sender.send_frame(msg.as_bytes())
 
     def __enter__(self):
         return self
@@ -551,6 +558,10 @@ class Connection:
     def __process_operation_error(self, msg):
         return False, OperationError(msg.get_bytes().decode('utf-8', errors='replace'))
 
+    def __handle_del_objs_locked(self, msg):
+        for _ in range(msg.get_uint()):
+            del self.__objs[msg.get_uint()]
+
     def __handle_goodbye_locked(self, msg):
         self.__set_stopping_locked()
         return False
@@ -560,6 +571,7 @@ class Connection:
         _RESULT: __handle_result_locked,
         _ERROR: __handle_error_locked,
         _OPERATION_ERROR: __handle_operation_error_locked,
+        _DEL_OBJS: __handle_del_objs_locked,
         _GOODBYE: __handle_goodbye_locked,
         None: 'ready',
     }
@@ -722,62 +734,6 @@ class _SimpleQueue:
         self.__lock_release()
 
 
-# Class responsible for executing arbitrary functions on a dedicated worker thread.
-class _ElsewhereExecutor:
-    def __init__(self):
-        self.__queue = _SimpleQueue()
-        self.__startable = True
-        self.__lock = threading.Lock()
-        self.__thread = None
-        self.__closing = False
-
-    # Execute a given function on a worker thread. This method may be safely used from __del__ methods. If shutdown()
-    # method is called, there is no guarantee that submitted functions get executed.
-    def submit(self, func, *args):
-        self.__queue.put((func, args))
-        if self.__startable:
-            self.__startable = False
-            # Important: below code may trigger GC, which in turn may call submit() method again. If submit()
-            # is called again, we must not reach this point. This is why self.__startable guard is necessary.
-            with self.__lock:
-                if self.__thread is None and not self.__closing:
-                    self.__thread = threading.Thread(target=self.__thread_main, daemon=True)
-                    self.__thread.start()
-
-    # Stop worker thread. This method must be explicitly called to avoid unexpected errors during interpreter shutdown.
-    def shutdown(self):
-        self.__queue.put(None)
-        self.__startable = False
-        with self.__lock:
-            # Important: below code may trigger GC, which in turn may call submit() method. Is is vital that
-            # submit() does not try to acquire lock again - this is why self.__startable is set to False before
-            # acquriring self.__lock.
-            self.__closing = True
-            if self.__thread is not None:
-                self.__thread.join()
-                self.__thread = None
-
-    def __thread_main(self):
-        for func, args in iter(self.__queue.get, None):
-            try:
-                func(*args)
-            except:
-                _ignore_exception_at(func)
-
-
-_elsewhere_executor = _ElsewhereExecutor()
-atexit.register(_elsewhere_executor.shutdown)
-
-_call_elsewhere = _elsewhere_executor.submit
-
-
-def _call_del_obj(conn, obj_id):
-    try:
-        conn.call(_del_obj, obj_id)
-    except DisconnectError:
-        pass
-
-
 class _BootstrappedConnection(Connection):
     def __init__(self, channel, finder):
         finder.set_connection(self)  # must be done before starting communication threads
@@ -802,7 +758,7 @@ class Proxy(object):
         return _get_obj, (self.__id, )
 
     def __del__(self):
-        _call_elsewhere(_call_del_obj, self._Proxy__conn, self.__id)
+        self._Proxy__conn._del_remote_obj(self.__id)
 
 
 _proxy_types = {}
@@ -859,10 +815,6 @@ def _apply_method(obj, name, args, kwargs):
 
 def _get_obj(id):
     return get_connection()._get_obj(id)
-
-
-def _del_obj(id):
-    return get_connection()._del_obj(id)
 
 
 def _apply_ref(func, args, kwargs):

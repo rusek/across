@@ -4,7 +4,6 @@ import across
 import copy
 import weakref
 import gc
-import threading
 from .utils import make_connection, Box
 
 
@@ -151,10 +150,8 @@ class ProxyDelTestCase(unittest.TestCase):
 
     def __collect(self, conn):
         gc.collect()
-        # wait for utility thread to process all tasks
-        event = threading.Event()
-        across._call_elsewhere(event.set)
-        event.wait()
+        # wait for objects to be deleted remotely
+        conn.call(nop)
 
 
 class Empty(object):
