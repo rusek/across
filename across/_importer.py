@@ -117,6 +117,7 @@ class _RemoteLoader(object):
 
 _minimal_modules = (
     'across',
+    'across.channels',
     'across._importer',
 )
 
@@ -153,7 +154,8 @@ def _bootstrap(data):
     finder = module._RemoteFinder(loaders)
     sys.meta_path.append(finder)
 
-    from across import _BootstrappedConnection, PipeChannel
+    from across import _BootstrappedConnection
+    from across.channels import PipeChannel
     channel = PipeChannel(sys.stdin.buffer, sys.stdout.buffer)
     with _BootstrappedConnection(channel, finder) as conn:
         conn.wait()

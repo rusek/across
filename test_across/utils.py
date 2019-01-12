@@ -1,4 +1,5 @@
 import across
+import across.channels
 import threading
 import io
 import subprocess
@@ -60,7 +61,7 @@ class _MemoryPipe:
             self.__recv_condition.notify()
 
 
-class _MemoryPipeChannel(across.Channel):
+class _MemoryPipeChannel(across.channels.Channel):
     def __init__(self, stdin, stdout):
         self.__stdin = stdin
         self.__stdout = stdout

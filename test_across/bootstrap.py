@@ -1,5 +1,6 @@
 import unittest
 import across
+import across.channels
 import sys
 from across._importer import _get_remote_loader
 
@@ -9,7 +10,7 @@ def subtract(left, right):
 
 
 def boot_connection():
-    chan = across.ProcessChannel([
+    chan = across.channels.ProcessChannel([
         '/bin/sh',
         '-c',
         'cd / && "$0" -c "$1"',

@@ -1,5 +1,6 @@
 import unittest
 import across
+import across.channels
 import struct
 import sys
 from concurrent.futures import Future
@@ -18,7 +19,7 @@ class SecondError(Exception):
     pass
 
 
-class FailingChannel(across.Channel):
+class FailingChannel(across.channels.Channel):
     def __init__(self):
         self.send_future = Future()
         self.recv_future = Future()
@@ -95,7 +96,7 @@ class DisconnectErrorTest(unittest.TestCase):
                 conn.wait()
 
 
-class ProtocolErrorChannel(across.Channel):
+class ProtocolErrorChannel(across.channels.Channel):
     def __init__(self, data):
         self.__data = data
 
