@@ -123,7 +123,7 @@ class ProtocolErrorTest(unittest.TestCase):
             if prepend_greeting:
                 greeting_frame = across._get_greeting_frame()
                 data = struct.pack('>I', len(greeting_frame)) + greeting_frame + data
-            data = across._superblock + data
+            data = across._get_superblock() + data
         with across.Connection(ProtocolErrorChannel(data)) as conn:
             conn.wait()
 
@@ -174,8 +174,13 @@ class ProtocolErrorTest(unittest.TestCase):
             self.__simulate_error(data=b'\0\0\0', prepend_superblock=False)
 
     def test_invalid_superblock_magic(self):
-        with self.assertRaisesRegex(across.ProtocolError, 'Invalid magic .*'):
-            superblock = b'x' * len(across._superblock)
+        with self.assertRaisesRegex(across.ProtocolError, 'Invalid magic: .*'):
+            superblock = b'x' * across._SUPERBLOCK_SIZE
+            self.__simulate_error(data=superblock, prepend_superblock=False)
+
+    def test_invalid_superblock_mode(self):
+        with self.assertRaisesRegex(across.ProtocolError, 'Invalid mode: 42'):
+            superblock = struct.pack('>IB', across._MAGIC, 42) + b'\x00' * (across._SUPERBLOCK_SIZE - 5)
             self.__simulate_error(data=superblock, prepend_superblock=False)
 
     def test_incompatible_python_version(self):

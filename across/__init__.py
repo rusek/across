@@ -73,13 +73,6 @@ class PipeChannel(Channel):
 
 
 class ProcessChannel(PipeChannel):
-    @staticmethod
-    def get_bios():
-        to_skip = len(_superblock) + 4 + len(_get_greeting_frame()) + 4
-        to_send = _superblock + struct.pack('>IB', 1, _BOOTSTRAP)
-        return ("import sys;i,o=sys.stdin.buffer,sys.stdout.buffer;o.write(%r);o.flush();i.read(%r);"
-                "exec(i.readline())" % (to_send, to_skip))
-
     def __init__(self, args=None):
         if args is None:
             args = [sys.executable, '-m', __name__]
@@ -267,8 +260,7 @@ _APPLY = 1
 _RESULT = 2
 _ERROR = 3
 _OPERATION_ERROR = 4
-_BOOTSTRAP = 5
-_GOODBYE = 6
+_GOODBYE = 5
 
 
 class _ConnScope(object):
@@ -325,9 +317,22 @@ class _SenderThread(threading.Thread):
         self.__queue.put(handler)
 
 
-_superblock_magic = b'\xe3\x5b\x9e\x78'
-_superblock_reserved = b'\0' * 12
-_superblock = _superblock_magic + _superblock_reserved
+_SUPERBLOCK_SIZE = 16
+_MAGIC = 0xe35b9e78
+
+_OS = 0
+_BIOS = 1
+
+
+def _get_superblock():
+    return struct.pack('>IB', _MAGIC, _OS) + b'\0' * (_SUPERBLOCK_SIZE - 5)
+
+
+def get_bios():
+    to_skip = _SUPERBLOCK_SIZE + 4
+    to_send = struct.pack('>IB', _MAGIC, _BIOS) + b'\0' * (_SUPERBLOCK_SIZE - 5)
+    return ("import sys;i,o=sys.stdin.buffer,sys.stdout.buffer;o.write(%r);o.flush();i.read(%r);"
+            "exec(i.readline())" % (to_send, to_skip))
 
 
 def _get_greeting_frame():
@@ -353,14 +358,9 @@ class Connection:
         self.__receiver_thread = threading.Thread(target=self.__receiver_loop, daemon=True)
         self.__state_condition = threading.Condition(self.__lock)
         self.__cancel_error = None
-        if type(self) is _BootstrappedConnection:
-            self.__handlers_locked = self.__ready_handlers_locked
-            self.__state = _RUNNING
-        else:
-            self.__handlers_locked = self.__greeting_handlers_locked
-            self.__state = _STARTING
-            self.__sender.send_superblock(_superblock)
-            self.__sender.send_frame(_get_greeting_frame())
+        self.__handlers_locked = self.__greeting_handlers_locked
+        self.__state = _STARTING
+        self.__sender.send_superblock(_get_superblock())
 
         self.__actors = {}
         self.__next_actor_id = 0
@@ -499,6 +499,7 @@ class Connection:
         self.__sender.start()
 
         try:
+            self.__receive_superblock()
             self.__receive_msgs()
         except Exception as error:
             self.__cancel(error)
@@ -510,13 +511,24 @@ class Connection:
         except Exception as error:
             self.__cancel(error)
 
-    def __receive_msgs(self):
-        if not isinstance(self, _BootstrappedConnection):
-            remote_sb = self.__framer.recv_superblock(len(_superblock))
-            remote_sb_magic = remote_sb[:len(_superblock_magic)]
-            if _superblock_magic != remote_sb_magic:
-                raise ProtocolError('Invalid magic (%r != %r)' % (_superblock_magic, remote_sb_magic))
+    def __receive_superblock(self):
+        while True:
+            superblock = self.__framer.recv_superblock(_SUPERBLOCK_SIZE)
+            magic, mode = struct.unpack_from('>IB', superblock)
+            if _MAGIC != magic:
+                raise ProtocolError('Invalid magic: 0x%x' % (magic, ))
+            if mode == _OS:
+                self.__sender.send_frame(_get_greeting_frame())
+                break
+            elif mode == _BIOS:
+                from ._importer import get_bootstrap_line
+                payload = get_bootstrap_line().encode('ascii')
+                self.__sender.send_frame(payload)
+                self.__sender.send_superblock(_get_superblock())
+            else:
+                raise ProtocolError('Invalid mode: %d' % (mode, ))
 
+    def __receive_msgs(self):
         while True:
             msg = _Message(self.__framer.recv_frame())
             with self.__lock:
@@ -536,14 +548,6 @@ class Connection:
             raise ProtocolError(
                 'Remote python %r is not compatible with local %r' %
                 (python_version, sys.version_info[:3]))
-        self.__handlers_locked = self.__ready_handlers_locked
-        self.__state = _RUNNING
-        self.__state_condition.notify_all()
-
-    def __handle_bootstrap_locked(self, msg):
-        from ._importer import get_bootstrap_line
-        payload = get_bootstrap_line().encode('ascii')
-        self.__sender.send_frame(payload)
         self.__handlers_locked = self.__ready_handlers_locked
         self.__state = _RUNNING
         self.__state_condition.notify_all()
@@ -639,7 +643,6 @@ class Connection:
 
     __greeting_handlers_locked = {
         _GREETING: __handle_greeting_locked,
-        _BOOTSTRAP: __handle_bootstrap_locked,
         None: 'greeting',
     }
 

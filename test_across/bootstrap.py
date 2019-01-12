@@ -14,7 +14,7 @@ def boot_connection():
         '-c',
         'cd / && "$0" -c "$1"',
         sys.executable,
-        across.ProcessChannel.get_bios(),
+        across.get_bios(),
     ])
     return across.Connection(chan)
 
