@@ -10,6 +10,7 @@ import types
 import atexit
 import traceback
 import fcntl
+import io
 
 
 _version = (0, 1, 0)
@@ -74,8 +75,8 @@ class PipeChannel(Channel):
 class ProcessChannel(PipeChannel):
     @staticmethod
     def get_bios():
-        to_skip = len(_get_greeting_frame()) + 8
-        to_send = struct.pack('>IBI', 5, _GREETING_BOOTSTRAP, _greeting_magic)
+        to_skip = len(_superblock) + 4 + len(_get_greeting_frame()) + 4
+        to_send = _superblock + struct.pack('>IB', 1, _BOOTSTRAP)
         return ("import sys;i,o=sys.stdin.buffer,sys.stdout.buffer;o.write(%r);o.flush();i.read(%r);"
                 "exec(i.readline())" % (to_send, to_skip))
 
@@ -100,6 +101,9 @@ class _Framer:
     def __init__(self, channel):
         self.__channel = channel
 
+    def send_superblock(self, superblock):
+        self.__sendall(superblock)
+
     def send_frame(self, frame):
         self.__sendall(struct.pack('>I', len(frame)) + frame)
 
@@ -109,13 +113,17 @@ class _Framer:
             assert size > 0
             data = data[size:]
 
+    def recv_superblock(self, size):
+        superblock = self.__recvall(size)
+        if len(superblock) != size:
+            raise ProtocolError('Incomplete superblock')
+        return superblock
+
     def recv_frame(self):
         header = self.__recvall(4)
         if len(header) != 4:
             raise ProtocolError('Incomplete frame size')
         size, = struct.unpack('>I', header)
-        if size == 0:
-            raise ProtocolError('Empty frame')
         frame = self.__recvall(size)
         if len(frame) != size:
             raise ProtocolError('Incomplete frame')
@@ -139,6 +147,45 @@ class _Framer:
 
     def close(self):
         self.__channel.close()
+
+
+class _Message:
+    def __init__(self, frame=None):
+        self.__buffer = io.BytesIO(frame)
+
+    def as_bytes(self):
+        return self.__buffer.getvalue()
+
+    def put_uint(self, obj):
+        if obj <= 0xfc:
+            self.__buffer.write(struct.pack('>B', obj))
+        elif obj <= 0xffff:
+            self.__buffer.write(b'\xfd' + struct.pack('>H', obj))
+        elif obj <= 0xffffffff:
+            self.__buffer.write(b'\xfe' + struct.pack('>I', obj))
+        else:
+            self.__buffer.write(b'\xff' + struct.pack('>Q', obj))
+
+    def get_uint(self):
+        data = self.__buffer.read(1)
+        if not data:
+            return 0
+        obj, = struct.unpack('>B', data)
+        if obj <= 0xfc:
+            return obj
+        elif obj == 0xfd:
+            return struct.unpack('>H', self.__buffer.read(2))[0]
+        elif obj == 0xfe:
+            return struct.unpack('>I', self.__buffer.read(4))[0]
+        else:
+            return struct.unpack('>Q', self.__buffer.read(8))[0]
+
+    def put_bytes(self, obj):
+        self.put_uint(len(obj))
+        self.__buffer.write(obj)
+
+    def get_bytes(self):
+        return self.__buffer.read(self.get_uint())
 
 
 class _ConnTls(threading.local):
@@ -220,18 +267,8 @@ _APPLY = 1
 _RESULT = 2
 _ERROR = 3
 _OPERATION_ERROR = 4
-_GREETING_BOOTSTRAP = 5
+_BOOTSTRAP = 5
 _GOODBYE = 6
-
-_message_types = frozenset([
-    _GREETING,
-    _APPLY,
-    _RESULT,
-    _ERROR,
-    _OPERATION_ERROR,
-    _GREETING_BOOTSTRAP,
-    _GOODBYE,
-])
 
 
 class _ConnScope(object):
@@ -257,30 +294,48 @@ class _SenderThread(threading.Thread):
 
     def run(self):
         try:
-            while True:
-                frame, cont = self.__queue.get()
-                if frame:
-                    self.__framer.send_frame(frame)
-                if cont is False:
-                    break
+            while self.__queue.get()() is not False:
+                pass
         except Exception as error:
             self.__cancel_func(error)
 
+    def send_superblock(self, superblock):
+        def handler():
+            self.__framer.send_superblock(superblock)
+
+        self.__queue.put(handler)
+
     def send_frame(self, frame):
-        self.__queue.put((frame, None))
+        def handler():
+            self.__framer.send_frame(frame)
+
+        self.__queue.put(handler)
 
     def send_frame_and_stop(self, frame):
-        self.__queue.put((frame, False))
+        def handler():
+            self.__framer.send_frame(frame)
+            return False
+
+        self.__queue.put(handler)
 
     def stop(self):
-        self.__queue.put((None, False))
+        def handler():
+            return False
+
+        self.__queue.put(handler)
 
 
-_greeting_magic = 0x02393e73
+_superblock_magic = b'\xe3\x5b\x9e\x78'
+_superblock_reserved = b'\0' * 12
+_superblock = _superblock_magic + _superblock_reserved
 
 
 def _get_greeting_frame():
-    return struct.pack('>BIBBBBBB', _GREETING, _greeting_magic, *sys.version_info[:3] + _version)
+    msg = _Message()
+    msg.put_uint(_GREETING)
+    for num in sys.version_info[:3] + _version:
+        msg.put_uint(num)
+    return msg.as_bytes()
 
 
 _active_connections = set()
@@ -304,6 +359,7 @@ class Connection:
         else:
             self.__handlers_locked = self.__greeting_handlers_locked
             self.__state = _STARTING
+            self.__sender.send_superblock(_superblock)
             self.__sender.send_frame(_get_greeting_frame())
 
         self.__actors = {}
@@ -379,7 +435,9 @@ class Connection:
             self.__state = _STOPPING
             self.__state_condition.notify_all()
             if self.__cancel_error is None:
-                self.__sender.send_frame_and_stop(struct.pack('>B', _GOODBYE))
+                msg = _Message()
+                msg.put_uint(_GOODBYE)
+                self.__sender.send_frame_and_stop(msg.as_bytes())
             else:
                 self.__sender.stop()
             for actor in self.__actors.values():
@@ -412,8 +470,11 @@ class Connection:
             if self.__state != _RUNNING:
                 raise DisconnectError
             actor = self.__get_current_actor_locked()
-            prefix = struct.pack('>BQ', _APPLY, actor.id ^ 1)
-            self.__sender.send_frame(prefix + payload)
+            msg = _Message()
+            msg.put_uint(_APPLY)
+            msg.put_uint(actor.id ^ 1)
+            msg.put_bytes(payload)
+            self.__sender.send_frame(msg.as_bytes())
         success, value = actor.run()
         if success:
             return value
@@ -450,27 +511,27 @@ class Connection:
             self.__cancel(error)
 
     def __receive_msgs(self):
+        if not isinstance(self, _BootstrappedConnection):
+            remote_sb = self.__framer.recv_superblock(len(_superblock))
+            remote_sb_magic = remote_sb[:len(_superblock_magic)]
+            if _superblock_magic != remote_sb_magic:
+                raise ProtocolError('Invalid magic (%r != %r)' % (_superblock_magic, remote_sb_magic))
+
         while True:
-            msg = self.__framer.recv_frame()
+            msg = _Message(self.__framer.recv_frame())
             with self.__lock:
                 if self.__cancel_error is not None:
                     break
-                msg_type = msg[0]
+                msg_type = msg.get_uint()
                 handler = self.__handlers_locked.get(msg_type)
                 if handler is None:
-                    if msg_type not in _message_types:
-                        raise ProtocolError('Invalid message type: %d' % (msg_type,))
-                    handler = self.__handlers_locked[None]
+                    handlers_name = self.__handlers_locked[None]
+                    raise ProtocolError('Invalid message in %s state: %d' % (handlers_name, msg_type))
                 if handler(self, msg) is False:
                     break
 
     def __handle_greeting_locked(self, msg):
-        if len(msg) < 11:
-            raise ProtocolError('Incomplete greeting message')
-        magic, = struct.unpack_from('>I', msg, 1)
-        if magic != _greeting_magic:
-            raise ProtocolError('Invalid magic number (0x%x != 0x%x)' % (magic, _greeting_magic))
-        python_version = struct.unpack_from('BBB', msg, 5)
+        python_version = (msg.get_uint(), msg.get_uint(), msg.get_uint())
         if (python_version[0] >= 3) != (sys.version_info[0] >= 3):
             raise ProtocolError(
                 'Remote python %r is not compatible with local %r' %
@@ -479,13 +540,7 @@ class Connection:
         self.__state = _RUNNING
         self.__state_condition.notify_all()
 
-    def __handle_greeting_bootstrap_locked(self, msg):
-        if len(msg) < 5:
-            raise ProtocolError('Incomplete greeting bootstrap message')
-        magic, = struct.unpack_from('>I', msg, 1)
-        if magic != _greeting_magic:
-            raise ProtocolError('Invalid magic number (0x%x != 0x%x)' % (magic, _greeting_magic))
-
+    def __handle_bootstrap_locked(self, msg):
         from ._importer import get_bootstrap_line
         payload = get_bootstrap_line().encode('ascii')
         self.__sender.send_frame(payload)
@@ -496,9 +551,7 @@ class Connection:
     def __handle_apply_locked(self, msg):
         if self.__state != _RUNNING:
             return
-        if len(msg) < 9:
-            raise ProtocolError('Incomplete apply message')
-        actor_id, = struct.unpack_from('>Q', msg, 1)
+        actor_id = msg.get_uint()
         actor = self.__actors.get(actor_id)
         if actor is None:
             if not actor_id & 1:
@@ -512,7 +565,7 @@ class Connection:
     def __process_apply(self, msg, actor_id):
         # TODO unhandled exceptions should cancel connection
         try:
-            obj = self.__unpickle(msg[9:])
+            obj = self.__unpickle(msg.get_bytes())
             with _ConnScope(self):
                 try:
                     func, args, kwargs = obj
@@ -528,14 +581,15 @@ class Connection:
             payload = str(error).encode('utf-8', errors='replace')
             msg_type = _OPERATION_ERROR
 
-        msg = struct.pack('>BQ', msg_type, actor_id ^ 1) + payload
-        self.__sender.send_frame(msg)
+        msg = _Message()
+        msg.put_uint(msg_type)
+        msg.put_uint(actor_id ^ 1)
+        msg.put_bytes(payload)
+        self.__sender.send_frame(msg.as_bytes())
         return None
 
     def __handle_result_locked(self, msg):
-        if len(msg) < 9:
-            raise ProtocolError('Incomplete result message')
-        actor_id, = struct.unpack_from('>Q', msg, 1)
+        actor_id = msg.get_uint()
         actor = self.__actors.get(actor_id)
         if actor is None:
             raise ProtocolError('Actor not found: %d' % (actor_id, ))
@@ -543,14 +597,12 @@ class Connection:
 
     def __process_result(self, msg):
         try:
-            return True, self.__unpickle(msg[9:])
+            return True, self.__unpickle(msg.get_bytes())
         except OperationError as error:
             return False, error
 
     def __handle_error_locked(self, msg):
-        if len(msg) < 9:
-            raise ProtocolError('Incomplete error message')
-        actor_id, = struct.unpack_from('>Q', msg, 1)
+        actor_id = msg.get_uint()
         actor = self.__actors.get(actor_id)
         if actor is None:
             raise ProtocolError('Actor not found: %d' % (actor_id, ))
@@ -558,31 +610,23 @@ class Connection:
 
     def __process_error(self, msg):
         try:
-            return False, _load_exception(self.__unpickle(msg[9:]))
+            return False, _load_exception(self.__unpickle(msg.get_bytes()))
         except OperationError as error:
             return False, error
 
     def __handle_operation_error_locked(self, msg):
-        if len(msg) < 9:
-            raise ProtocolError('Incomplete operation error message')
-        actor_id, = struct.unpack_from('>Q', msg, 1)
+        actor_id = msg.get_uint()
         actor = self.__actors.get(actor_id)
         if actor is None:
             raise ProtocolError('Actor not found: %d' % (actor_id, ))
         actor.submit(self.__process_operation_error, msg)
 
+    def __process_operation_error(self, msg):
+        return False, OperationError(msg.get_bytes().decode('utf-8', errors='replace'))
+
     def __handle_goodbye_locked(self, msg):
         self.__set_stopping_locked()
         return False
-
-    def __process_operation_error(self, msg):
-        return False, OperationError(msg[9:].decode('utf-8', errors='replace'))
-
-    def __unexpected_in_ready_state(self, msg):
-        raise ProtocolError('Unexpected message in ready state: %r' % (msg[0], ))
-
-    def __unexpected_in_greeting_state(self, msg):
-        raise ProtocolError('Unexpected message in greeting state: %r' % (msg[0], ))
 
     __ready_handlers_locked = {
         _APPLY: __handle_apply_locked,
@@ -590,13 +634,13 @@ class Connection:
         _ERROR: __handle_error_locked,
         _OPERATION_ERROR: __handle_operation_error_locked,
         _GOODBYE: __handle_goodbye_locked,
-        None: __unexpected_in_ready_state,
+        None: 'ready',
     }
 
     __greeting_handlers_locked = {
         _GREETING: __handle_greeting_locked,
-        _GREETING_BOOTSTRAP: __handle_greeting_bootstrap_locked,
-        None: __unexpected_in_greeting_state,
+        _BOOTSTRAP: __handle_bootstrap_locked,
+        None: 'greeting',
     }
 
     def wait(self):
