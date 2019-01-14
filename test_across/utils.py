@@ -5,6 +5,10 @@ import io
 import subprocess
 import pickle
 import sys
+import tempfile
+import os.path
+import atexit
+import shutil
 
 
 class _MemoryPipe:
@@ -75,9 +79,6 @@ class _MemoryPipeChannel(across.channels.Channel):
     def cancel(self):
         self.__stdin.close()
         self.__stdout.close()
-
-    def close(self):
-        pass
 
 
 class MemoryChannel(_MemoryPipeChannel):
@@ -188,3 +189,26 @@ pickle.dump(result, sys.stdout.buffer)"""],
         return value
     else:
         raise value
+
+
+_tmpdir = None
+_tmp_counter = 0
+
+
+def mktemp():
+    global _tmpdir, _tmp_counter
+
+    if _tmpdir is None:
+        _tmpdir = tempfile.mkdtemp()
+
+    _tmp_counter += 1
+
+    return os.path.join(_tmpdir, str(_tmp_counter))
+
+
+def _cleanup_tmpdir():
+    if _tmpdir:
+        shutil.rmtree(_tmpdir)
+
+
+atexit.register(_cleanup_tmpdir)

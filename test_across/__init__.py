@@ -12,6 +12,7 @@ from . import (
     logging,
     pep8,
     bootstrap,
+    channels,
 )
 
 
@@ -30,6 +31,7 @@ def load_tests(loader, tests, pattern):
         logging,
         pep8,
         bootstrap,
+        channels,
     ]:
         suite.addTests(loader.loadTestsFromModule(mod))
     return suite

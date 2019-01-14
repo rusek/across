@@ -21,9 +21,13 @@ class SecondError(Exception):
 
 class FailingChannel(across.channels.Channel):
     def __init__(self):
+        self.connect_future = Future()
         self.send_future = Future()
         self.recv_future = Future()
         self.close_future = Future()
+
+    def connect(self):
+        self.connect_future.result()
 
     def send(self, data):
         self.send_future.result()
@@ -32,9 +36,6 @@ class FailingChannel(across.channels.Channel):
     def recv(self, size):
         self.recv_future.result()
         return b''
-
-    def cancel(self):
-        pass
 
     def close(self):
         self.close_future.result()
@@ -77,17 +78,26 @@ class DisconnectErrorTest(unittest.TestCase):
         with self.assertRaises(across.CancelledError):
             conn.close()
 
+    def test_connect_exception(self):
+        chan = FailingChannel()
+        chan.connect_future.set_exception(FirstError())
+        with self.assertRaises(FirstError):
+            with across.Connection(chan):
+                pass
+
     def test_recv_exception_is_ignored_after_send_exception(self):
         chan = FailingChannel()
+        chan.connect_future.set_result(None)
         chan.close_future.set_result(None)
         with self.assertRaises(FirstError):
             with across.Connection(chan) as conn:
-                chan.send_future.set_exception(FirstError)
+                chan.send_future.set_exception(FirstError())
                 conn.wait()
                 chan.recv_future.set_exception(SecondError())
 
     def test_channel_close_exception_is_ignored_after_previous_exception(self):
         chan = FailingChannel()
+        chan.connect_future.set_result(None)
         chan.send_future.set_result(None)
         chan.recv_future.set_exception(FirstError())
         chan.close_future.set_exception(SecondError())
@@ -106,12 +116,6 @@ class ProtocolErrorChannel(across.channels.Channel):
 
     def send(self, data):
         return len(data)
-
-    def cancel(self):
-        pass
-
-    def close(self):
-        pass
 
 
 class ProtocolErrorTest(unittest.TestCase):

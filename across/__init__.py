@@ -55,15 +55,6 @@ class _Framer:
             size -= len(chunk)
         return data
 
-    def cancel(self):
-        try:
-            self.__channel.cancel()
-        except Exception:
-            _ignore_exception_at(self.__channel)
-
-    def close(self):
-        self.__channel.close()
-
 
 class _Message:
     def __init__(self, frame=None):
@@ -277,6 +268,7 @@ _STOPPING = 2
 
 class Connection:
     def __init__(self, channel):
+        self.__channel = channel
         self.__framer = _Framer(channel)
         self.__lock = threading.Lock()
         self.__sender = _SenderThread(self.__framer, cancel_func=self.__cancel)
@@ -358,7 +350,10 @@ class Connection:
             if self.__cancel_error is None:
                 self.__cancel_error = error
                 self.__set_stopping_locked()
-                self.__framer.cancel()
+                try:
+                    self.__channel.cancel()
+                except Exception:
+                    _ignore_exception_at(self.__channel)
 
     def __set_stopping_locked(self):
         if self.__state in (_STARTING, _RUNNING):
@@ -426,6 +421,12 @@ class Connection:
                 raise OperationError('Unpickling failed: %s' % (error, ))
 
     def __receiver_loop(self):
+        try:
+            self.__channel.connect()
+        except Exception as error:
+            self.__cancel(error)
+            return
+
         self.__sender.start()
 
         try:
@@ -437,7 +438,7 @@ class Connection:
         self.__sender.join()
 
         try:
-            self.__framer.close()
+            self.__channel.close()
         except Exception as error:
             self.__cancel(error)
 
