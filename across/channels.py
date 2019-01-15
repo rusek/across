@@ -9,6 +9,9 @@ import errno
 
 
 class Channel:
+    def set_timeout(self, timeout):
+        pass
+
     def connect(self):
         pass
 
@@ -32,6 +35,10 @@ class _Poller:
         self.__cancelled = False
         self.__send_poll = select.poll()
         self.__recv_poll = select.poll()
+        self.__timeout_ms = None
+
+    def set_timeout(self, timeout):
+        self.__timeout_ms = max(1, int(round(timeout * 1000)))
 
     def setup(self, send_fd, recv_fd):
         with self.__cancel_lock:
@@ -44,12 +51,14 @@ class _Poller:
             self.__recv_poll.register(recv_fd, select.POLLIN)
 
     def wait_recv(self):
-        self.__recv_poll.poll()
+        if not self.__recv_poll.poll(self.__timeout_ms):
+            raise OSError(errno.ETIMEDOUT)
         if self.__cancelled:
             raise ValueError('Channel is cancelled')
 
     def wait_send(self):
-        self.__send_poll.poll()
+        if not self.__send_poll.poll(self.__timeout_ms):
+            raise OSError(errno.ETIMEDOUT)
         if self.__cancelled:
             raise ValueError('Channel is cancelled')
 
@@ -76,6 +85,9 @@ class PipeChannel(Channel):
         self.__stdout_fd = stdout.fileno()
         self.__poller = _Poller()
         self.__poller.setup(self.__stdout_fd, self.__stdin.fileno())
+
+    def set_timeout(self, timeout):
+        self.__poller.set_timeout(timeout)
 
     def recv(self, size):
         data = self.__stdin.read(size)
@@ -130,6 +142,9 @@ class SocketChannel(Channel):
         self.__address = address
         self.__sock = sock
         self.__poller = _Poller()
+
+    def set_timeout(self, timeout):
+        self.__poller.set_timeout(timeout)
 
     def __tune_socket(self):
         if self.__family in (socket.AF_INET, socket.AF_INET6):

@@ -7,6 +7,7 @@ import types
 import atexit
 import traceback
 import io
+import queue
 
 
 _version = (0, 1, 0)
@@ -176,6 +177,7 @@ _ERROR = 3
 _OPERATION_ERROR = 4
 _GOODBYE = 5
 _DEL_OBJS = 6
+_IDLE = 7
 
 
 class _ConnScope(object):
@@ -198,13 +200,24 @@ class _SenderThread(threading.Thread):
         self.__framer = framer
         self.__cancel_func = cancel_func
         self.__queue = _SimpleQueue()
+        self.__idle_timeout = None
 
     def run(self):
         try:
-            while self.__queue.get()() is not False:
-                pass
+            while True:
+                try:
+                    task = self.__queue.get(self.__idle_timeout)
+                except queue.Empty:
+                    task = self.__idle
+                if task() is False:
+                    break
         except Exception as error:
             self.__cancel_func(error)
+
+    def __idle(self):
+        msg = _Message()
+        msg.put_uint(_IDLE)
+        self.__framer.send_frame(msg.as_bytes())
 
     def send_superblock(self, superblock):
         def handler():
@@ -232,6 +245,12 @@ class _SenderThread(threading.Thread):
 
         self.__queue.put(handler)
 
+    def update_idle_timeout(self, timeout):
+        def handler():
+            self.__idle_timeout = timeout
+
+        self.__queue.put(handler)
+
 
 _SUPERBLOCK_SIZE = 16
 _MAGIC = 0xe35b9e78
@@ -251,12 +270,32 @@ def get_bios():
             "exec(i.readline())" % (to_send, to_skip))
 
 
-def _get_greeting_frame():
+def _get_greeting_frame(timeout_ms):
     msg = _Message()
     msg.put_uint(_GREETING)
     for num in sys.version_info[:3] + _version:
         msg.put_uint(num)
+    msg.put_uint(timeout_ms)
     return msg.as_bytes()
+
+
+# timeout (in ms) is transmitted as uint64; these limits help avoiding internal
+# errors when too small/large value is given; note that 1ms timeout will probably
+# sooner or later cause a connection loss
+_MIN_TIMEOUT = 0.001
+_MAX_TIMEOUT = 365 * 24 * 60 * 60
+
+
+def _sanitize_timeout(timeout):
+    if timeout is None:
+        return timeout
+    if isinstance(timeout, int):
+        timeout = float(timeout)
+    elif not isinstance(timeout, float):
+        raise TypeError('timeout must be a float')
+    if not timeout > 0.0:
+        raise ValueError('timeout must be positive')
+    return max(_MIN_TIMEOUT, min(_MAX_TIMEOUT, timeout))
 
 
 _active_connections = set()
@@ -267,8 +306,15 @@ _STOPPING = 2
 
 
 class Connection:
-    def __init__(self, channel):
+    def __init__(self, channel, timeout=None):
+        timeout = _sanitize_timeout(timeout)
+        if timeout is not None:
+            channel.set_timeout(timeout)
+            timeout_ms = max(1, int(round(timeout * 1000.0)))
+        else:
+            timeout_ms = 0
         self.__channel = channel
+        self.__timeout_ms = timeout_ms
         self.__framer = _Framer(channel)
         self.__lock = threading.Lock()
         self.__sender = _SenderThread(self.__framer, cancel_func=self.__cancel)
@@ -449,7 +495,7 @@ class Connection:
             if _MAGIC != magic:
                 raise ProtocolError('Invalid magic: 0x%x' % (magic, ))
             if mode == _OS:
-                self.__sender.send_frame(_get_greeting_frame())
+                self.__sender.send_frame(_get_greeting_frame(self.__timeout_ms))
                 break
             elif mode == _BIOS:
                 from ._importer import get_bootstrap_line
@@ -475,10 +521,19 @@ class Connection:
 
     def __handle_greeting_locked(self, msg):
         python_version = (msg.get_uint(), msg.get_uint(), msg.get_uint())
+        across_version = (msg.get_uint(), msg.get_uint(), msg.get_uint())  # unused for now
+        timeout_ms = msg.get_uint()
         if (python_version[0] >= 3) != (sys.version_info[0] >= 3):
             raise ProtocolError(
                 'Remote python %r is not compatible with local %r' %
                 (python_version, sys.version_info[:3]))
+        if timeout_ms:
+            # idle messages should be sent after a half of timeout passes
+            idle_timeout = timeout_ms / 2000.0
+        else:
+            idle_timeout = None
+
+        self.__sender.update_idle_timeout(idle_timeout)
         self.__handlers_locked = self.__ready_handlers_locked
         self.__state = _RUNNING
         self.__state_condition.notify_all()
@@ -567,6 +622,9 @@ class Connection:
         self.__set_stopping_locked()
         return False
 
+    def __handle_idle_locked(self, msg):
+        pass
+
     __ready_handlers_locked = {
         _APPLY: __handle_apply_locked,
         _RESULT: __handle_result_locked,
@@ -574,6 +632,7 @@ class Connection:
         _OPERATION_ERROR: __handle_operation_error_locked,
         _DEL_OBJS: __handle_del_objs_locked,
         _GOODBYE: __handle_goodbye_locked,
+        _IDLE: __handle_idle_locked,
         None: 'ready',
     }
 
@@ -716,8 +775,11 @@ class _SimpleQueue:
 
     # Wait until a queue becomes non-empty, and retrieve a single element from the queue. This function may be
     # called only from a single thread at a time.
-    def get(self):
-        self.__waiter_acquire()
+    def get(self, timeout=None):
+        if timeout is None:
+            self.__waiter_acquire()
+        elif not self.__waiter_acquire(timeout=timeout):
+            raise queue.Empty
         self.__lock_acquire()
         item = self.__items_popleft()
         if self.__items:

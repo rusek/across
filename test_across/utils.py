@@ -9,6 +9,7 @@ import tempfile
 import os.path
 import atexit
 import shutil
+import unittest
 
 
 class _MemoryPipe:
@@ -212,3 +213,26 @@ def _cleanup_tmpdir():
 
 
 atexit.register(_cleanup_tmpdir)
+
+
+class PackageTestLoader:
+    def __init__(self, modname):
+        self._mods = []
+        mod = sys.modules[modname]
+        if not hasattr(mod, '__file__') or not os.path.isfile(mod.__file__):
+            # module is probably being imported by across._importer
+            return
+        pkg_dir = os.path.dirname(mod.__file__)
+        for filename in sorted(os.listdir(pkg_dir)):
+            if not filename.startswith('_') and filename.endswith('.py'):
+                modbase = os.path.splitext(filename)[0]
+                submodname = '%s.%s' % (modname, modbase)
+                __import__(submodname)
+                submod = sys.modules[submodname]
+                self._mods.append(submod)
+
+    def __call__(self, loader, tests, pattern):
+        suite = unittest.TestSuite()
+        for mod in self._mods:
+            suite.addTests(loader.loadTestsFromModule(mod))
+        return suite

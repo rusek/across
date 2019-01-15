@@ -3,6 +3,7 @@ import across
 import threading
 import gc
 import platform
+from queue import Empty
 
 
 SimpleQueue = across._SimpleQueue
@@ -41,6 +42,15 @@ class SimpleQueueTest(unittest.TestCase):
             queue.put(i)
         for i in range(3):
             self.assertEqual(queue.get(), i)
+
+    def test_get_with_timeout(self):
+        queue = SimpleQueue()
+        with self.assertRaises(Empty):
+            queue.get(0.01)
+        queue.put('x')
+        self.assertEqual(queue.get(0.01), 'x')
+        with self.assertRaises(Empty):
+            queue.get(0.01)
 
     def test_multithread(self):
         queue = SimpleQueue()

@@ -6,8 +6,8 @@ import sys
 
 class GreetingTest(unittest.TestCase):
     def test_greeting(self):
-        frame = across._get_greeting_frame()
-        self.assertEqual(len(frame), 1 + 3 + 3)
+        frame = across._get_greeting_frame(0)
+        self.assertEqual(len(frame), 1 + 3 + 3 + 1)
 
         msg_type, = struct.unpack_from('>B', frame, 0)
         self.assertEqual(msg_type, across._GREETING)

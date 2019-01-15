@@ -126,7 +126,7 @@ class ProtocolErrorTest(unittest.TestCase):
             data = struct.pack('>I', len(frame)) + frame
         if prepend_superblock:
             if prepend_greeting:
-                greeting_frame = across._get_greeting_frame()
+                greeting_frame = across._get_greeting_frame(0)
                 data = struct.pack('>I', len(greeting_frame)) + greeting_frame + data
             data = across._get_superblock() + data
         with across.Connection(ProtocolErrorChannel(data)) as conn:

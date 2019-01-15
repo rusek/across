@@ -224,6 +224,35 @@ class ChannelTest(unittest.TestCase):
         chan.close()
         chan.cancel()
 
+    def test_recv_timeout(self):
+        chan, rchan = self.connect_pair()
+        chan.set_timeout(0.01)
+        try:
+            chan.recv(1)
+        except Exception as exc:
+            self.verify_exception(exc)
+        else:
+            self.fail('Exception not raised')
+        rchan.close()
+        try:
+            chan.close()
+        except Exception as exc:
+            self.verify_exception(exc)
+
+    def test_send_timeout(self):
+        chan, rchan = self.connect_pair()
+        chan.set_timeout(0.01)
+        try:
+            while True:
+                chan.send(b'x' * 1024 * 64)
+        except Exception as exc:
+            self.verify_exception(exc)
+        rchan.close()
+        try:
+            chan.close()
+        except Exception as exc:
+            self.verify_exception(exc)
+
 
 def snoop_socket(chan):
     for obj in chan.__dict__.values():
