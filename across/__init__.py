@@ -99,7 +99,7 @@ class _Message:
 class _ConnTls(threading.local):
     def __init__(self):
         self.conn = None
-        self.pickling = False
+        self.proxy_ids = None
 
 
 _conn_tls = _ConnTls()
@@ -181,17 +181,17 @@ _IDLE = 7
 
 
 class _ConnScope(object):
-    def __init__(self, conn, pickling=False):
+    def __init__(self, conn, proxy_ids=None):
         self.__conn = conn
-        self.__pickling = pickling
+        self.__proxy_ids = proxy_ids
 
     def __enter__(self):
         _conn_tls.conn, self.__conn = self.__conn,  _conn_tls.conn
-        _conn_tls.pickling, self.__pickling = self.__pickling, _conn_tls.pickling
+        _conn_tls.proxy_ids, self.__proxy_ids = self.__proxy_ids, _conn_tls.proxy_ids
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         _conn_tls.conn = self.__conn
-        _conn_tls.pickling = self.__pickling
+        _conn_tls.proxy_ids = self.__proxy_ids
 
 
 class _SenderThread(threading.Thread):
@@ -433,37 +433,51 @@ class Connection:
                 msg = "call() missing 1 required positional argument: 'func'"
             raise TypeError(msg) from None
 
-        payload = self.__pickle((func, args, kwargs))
-
         with self.__lock:
             while self.__state == _STARTING:
                 self.__state_condition.wait()
             if self.__state != _RUNNING:
                 raise DisconnectError
             actor = self.__get_current_actor_locked()
-            msg = _Message()
-            msg.put_uint(_APPLY)
-            msg.put_uint(actor.id ^ 1)
-            msg.put_bytes(payload)
-            self.__sender.send_frame(msg.as_bytes())
+
+        msg = _Message()
+        msg.put_uint(_APPLY)
+        msg.put_uint(actor.id ^ 1)
+        self.__serialize(msg, (func, args, kwargs))
+        self.__sender.send_frame(msg.as_bytes())
         success, value = actor.run()
         if success:
             return value
         else:
             raise value
 
-    def __pickle(self, obj):
-        with _ConnScope(self, pickling=True):
+    def __serialize(self, msg, obj):
+        proxy_ids = []
+        with _ConnScope(self, proxy_ids=proxy_ids):
             try:
-                return pickle.dumps(obj)
+                msg.put_bytes(pickle.dumps(obj))
+                msg.put_uint(len(proxy_ids))
+                for proxy_id in proxy_ids:
+                    msg.put_uint(proxy_id)
             except Exception as error:
+                for proxy_id in proxy_ids:
+                    del self.__objs[proxy_id]
                 raise OperationError('Pickling failed: %s' % (error, ))
 
-    def __unpickle(self, data):
-        with _ConnScope(self):
+    def __deserialize(self, msg):
+        proxy_ids = []
+        with _ConnScope(self, proxy_ids=proxy_ids):
             try:
-                return pickle.loads(data)
+                return pickle.loads(msg.get_bytes())
             except Exception as error:
+                leaked_proxy_ids = set(msg.get_uint() for _ in range(msg.get_uint())) - set(proxy_ids)
+                if leaked_proxy_ids:
+                    msg = _Message()
+                    msg.put_uint(_DEL_OBJS)
+                    msg.put_uint(len(leaked_proxy_ids))
+                    for proxy_id in leaked_proxy_ids:
+                        msg.put_uint(proxy_id)
+                    self.__sender.send_frame(msg.as_bytes())
                 raise OperationError('Unpickling failed: %s' % (error, ))
 
     def __receiver_loop(self):
@@ -555,26 +569,27 @@ class Connection:
     def __process_apply(self, msg, actor_id):
         # TODO unhandled exceptions should cancel connection
         try:
-            obj = self.__unpickle(msg.get_bytes())
+            obj = self.__deserialize(msg)
             with _ConnScope(self):
                 try:
                     func, args, kwargs = obj
                     result = func(*args, **kwargs)
                 except Exception as error:
-                    obj = _dump_exception(error)
-                    msg_type = _ERROR
+                    msg = _Message()
+                    msg.put_uint(_ERROR)
+                    msg.put_uint(actor_id ^ 1)
+                    self.__serialize(msg, _dump_exception(error))
                 else:
-                    obj = result
-                    msg_type = _RESULT
-            payload = self.__pickle(obj)
+                    msg = _Message()
+                    msg.put_uint(_RESULT)
+                    msg.put_uint(actor_id ^ 1)
+                    self.__serialize(msg, result)
         except OperationError as error:
-            payload = str(error).encode('utf-8', errors='replace')
-            msg_type = _OPERATION_ERROR
+            msg = _Message()
+            msg.put_uint(_OPERATION_ERROR)
+            msg.put_uint(actor_id ^ 1)
+            msg.put_bytes(str(error).encode('utf-8', errors='replace'))
 
-        msg = _Message()
-        msg.put_uint(msg_type)
-        msg.put_uint(actor_id ^ 1)
-        msg.put_bytes(payload)
         self.__sender.send_frame(msg.as_bytes())
         return None
 
@@ -587,7 +602,7 @@ class Connection:
 
     def __process_result(self, msg):
         try:
-            return True, self.__unpickle(msg.get_bytes())
+            return True, self.__deserialize(msg)
         except OperationError as error:
             return False, error
 
@@ -600,7 +615,7 @@ class Connection:
 
     def __process_error(self, msg):
         try:
-            return False, _load_exception(self.__unpickle(msg.get_bytes()))
+            return False, _load_exception(self.__deserialize(msg))
         except OperationError as error:
             return False, error
 
@@ -812,7 +827,7 @@ class Proxy(object):
         return self._Proxy__conn.call(_get_obj, self.__id)
 
     def __reduce__(self):
-        if not _conn_tls.pickling:
+        if _conn_tls.proxy_ids is None:
             raise RuntimeError("Only 'across.Connection' objects can pickle 'across.Proxy' objects")
         conn = _conn_tls.conn
         if conn is not self._Proxy__conn:
@@ -856,9 +871,11 @@ class Reference(object):
 
     def __reduce__(self):
         cls = type(self.value)
-        if not _conn_tls.pickling:
+        if _conn_tls.proxy_ids is None:
             raise RuntimeError("Only 'across.Connection' objects can pickle 'across.Reference' objects")
-        return _make_proxy, (_types_to_names.get(cls, cls), _conn_tls.conn._put_obj(self.value))
+        proxy_id = _conn_tls.conn._put_obj(self.value)
+        _conn_tls.proxy_ids.append(proxy_id)
+        return _make_proxy, (_types_to_names.get(cls, cls), proxy_id)
 
 
 def ref(obj):
@@ -889,6 +906,7 @@ def _make_proxy(cls, id):
     proxy_type = _proxy_types.get(cls)
     if proxy_type is None:
         proxy_type = _proxy_types[cls] = _make_auto_proxy_type(cls)
+    _conn_tls.proxy_ids.append(id)
     return proxy_type(id)
 
 

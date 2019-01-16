@@ -44,6 +44,12 @@ class Add(object):
         return left + right
 
 
+def run_gc(conn):
+    gc.collect()
+    # wait for objects to be deleted remotely
+    conn.call(nop)
+
+
 class ProxyTestCase(unittest.TestCase):
     def test_create_without_args(self):
         with make_connection() as conn:
@@ -145,13 +151,8 @@ class ProxyDelTestCase(unittest.TestCase):
             self.assertIsNotNone(obj_weakref())
 
             proxy = None
-            self.__collect(conn)
+            run_gc(conn)
             self.assertIsNone(obj_weakref())
-
-    def __collect(self, conn):
-        gc.collect()
-        # wait for objects to be deleted remotely
-        conn.call(nop)
 
 
 class Empty(object):
@@ -208,3 +209,60 @@ class AutoProxyTestCase(unittest.TestCase):
         with make_connection() as conn:
             proxy = conn.replicate(Add())
             self.assertEqual(proxy(1, 2), 3)
+
+
+class BrokenPickle(object):
+    def __reduce__(self):
+        raise TypeError('%s is not pickleable' % (self.__class__.__name__, ))
+
+
+def _reduce_broken_unpickle(cls):
+    raise TypeError('%s is not unpickleable' % (cls.__name__, ))
+
+
+class BrokenUnpickle(object):
+    def __reduce__(self):
+        return _reduce_broken_unpickle, (self.__class__, )
+
+
+class ProxyPicklingLeakTest(unittest.TestCase):
+    def setUp(self):
+        self.objs = []
+
+    def make_obj(self):
+        obj = Counter()  # any object will do
+        self.objs.append(obj)
+        return obj
+
+    def verify_no_leak(self, conn):
+        for i in range(len(self.objs)):
+            self.objs[i] = weakref.ref(self.objs[i])
+        run_gc(conn)
+        for weak_obj in self.objs:
+            self.assertIsNone(weak_obj())
+
+    def test_pickling_leak(self):
+        with make_connection() as conn:
+            with self.assertRaises(across.OperationError):
+                conn.call(
+                    nop,
+                    across.ref(self.make_obj()),
+                    across.ref(self.make_obj()),
+                    BrokenPickle(),
+                    across.ref(self.make_obj()),
+                    across.ref(self.make_obj()),
+                )
+            self.verify_no_leak(conn)
+
+    def test_unpickling_leak(self):
+        with make_connection() as conn:
+            with self.assertRaises(across.OperationError):
+                conn.call(
+                    nop,
+                    across.ref(self.make_obj()),
+                    across.ref(self.make_obj()),
+                    BrokenUnpickle(),
+                    across.ref(self.make_obj()),
+                    across.ref(self.make_obj()),
+                )
+            self.verify_no_leak(conn)
