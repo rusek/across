@@ -298,11 +298,21 @@ def _sanitize_timeout(timeout):
     return max(_MIN_TIMEOUT, min(_MAX_TIMEOUT, timeout))
 
 
-_active_connections = set()
+_unclosed_connections = set()
 
+# Receiver thread establishes connection / performs handshake. Thre is no error (Connection.__cancel_error is None).
+# Sending data is allowed only from receiver thread.
 _STARTING = 0
+# Handshake completed. No error. Any thread may send data.
 _RUNNING = 1
+# Receiver thread shuts down connection. Sender thread no longer accepts new data to send (new data is silently
+# dropped). Some error might have occurred (Connection.__cancel_error may not be None).
 _STOPPING = 2
+# Receiver thread finished execution and is waiting to be joined. All other resources are already freed.
+# Some error might have occurred.
+_STOPPED = 3
+# Receiver thread was joined. Error, if any, has been re-raised to the user (from Connection.close()).
+_CLOSED = 4
 
 
 class Connection:
@@ -335,7 +345,7 @@ class Connection:
 
         self.__receiver_thread.start()
 
-        _active_connections.add(self)
+        _unclosed_connections.add(self)
 
     def _get_obj(self, id):
         return self.__objs[id]
@@ -356,44 +366,43 @@ class Connection:
         self.__sender.send_frame(msg.as_bytes())
 
     def __enter__(self):
+        with self.__lock:
+            while self.__state in (_STARTING, _STOPPING):
+                self.__state_condition.wait()
+            if self.__state != _RUNNING:
+                self.__set_closed_locked()
+                raise ValueError('Connection is closed')
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        if exc_type is None:
-            self.close()
-        else:
-            self.__cancel(Exception())
-            try:
-                self.close()
-            except Exception:
-                pass
+        self.close()
 
     def close(self):
-        try:
-            _active_connections.remove(self)
-        except KeyError:
-            return  # already closed
-
         with self.__lock:
             while self.__state == _STARTING:
                 self.__state_condition.wait()
             self.__set_stopping_locked()
+            while self.__state == _STOPPING:
+                self.__state_condition.wait()
+            self.__set_closed_locked()
 
-        self.__receiver_thread.join()
-        for actor_thread in self.__actor_threads:
-            actor_thread.join()
-        if self.__cancel_error is not None:
-            try:
-                raise self.__cancel_error
-            finally:
-                self.__cancel_error = None
+    def __set_closed_locked(self):
+        if self.__state != _CLOSED:
+            self.__state = _CLOSED
+            _unclosed_connections.remove(self)
+            self.__receiver_thread.join()
+            if self.__cancel_error is not None:
+                try:
+                    raise self.__cancel_error
+                finally:
+                    self.__cancel_error = None
 
     def cancel(self):
         self.__cancel(CancelledError())
 
     def __cancel(self, error):
         with self.__lock:
-            if self.__cancel_error is None:
+            if self.__cancel_error is None and self.__state not in (_STOPPED, _CLOSED):
                 self.__cancel_error = error
                 self.__set_stopping_locked()
                 try:
@@ -485,22 +494,28 @@ class Connection:
             self.__channel.connect()
         except Exception as error:
             self.__cancel(error)
-            return
+        else:
+            self.__sender.start()
 
-        self.__sender.start()
+            try:
+                self.__receive_superblock()
+                self.__receive_msgs()
+            except Exception as error:
+                self.__cancel(error)
 
-        try:
-            self.__receive_superblock()
-            self.__receive_msgs()
-        except Exception as error:
-            self.__cancel(error)
+            self.__sender.join()
 
-        self.__sender.join()
+            try:
+                self.__channel.close()
+            except Exception as error:
+                self.__cancel(error)
 
-        try:
-            self.__channel.close()
-        except Exception as error:
-            self.__cancel(error)
+            for actor_thread in self.__actor_threads:
+                actor_thread.join()
+
+        with self.__lock:
+            self.__state = _STOPPED
+            self.__state_condition.notify_all()
 
     def __receive_superblock(self):
         while True:
@@ -686,8 +701,8 @@ def _ignore_exception_at(obj):
 
 
 def _shutdown():
-    while _active_connections:
-        conn_close = next(iter(_active_connections)).close
+    while _unclosed_connections:
+        conn_close = next(iter(_unclosed_connections)).close
         try:
             conn_close()
         except:

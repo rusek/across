@@ -90,10 +90,11 @@ class DisconnectErrorTest(unittest.TestCase):
         chan.connect_future.set_result(None)
         chan.close_future.set_result(None)
         with self.assertRaises(FirstError):
-            with across.Connection(chan) as conn:
-                chan.send_future.set_exception(FirstError())
-                conn.wait()
-                chan.recv_future.set_exception(SecondError())
+            conn = across.Connection(chan)
+            chan.send_future.set_exception(FirstError())
+            conn.wait()
+            chan.recv_future.set_exception(SecondError())
+            conn.close()
 
     def test_channel_close_exception_is_ignored_after_previous_exception(self):
         chan = FailingChannel()
