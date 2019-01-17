@@ -8,6 +8,7 @@ import atexit
 import traceback
 import io
 import queue
+import ast
 
 
 _version = (0, 1, 0)
@@ -690,6 +691,17 @@ class Connection:
     def replicate(self, obj):
         return self.call(ref, obj)
 
+    def execute(*args, **kwargs):
+        try:
+            self, source = args[:2]
+        except ValueError:
+            if not args:
+                msg = "execute() missing 2 required positional arguments: 'self' and 'source'"
+            else:
+                msg = "execute() missing 1 required positional argument: 'source'"
+            raise TypeError(msg) from None
+        return self.call(_execute, source, kwargs)
+
 
 # based on PyErr_WriteUnraisable
 def _ignore_exception_at(obj):
@@ -710,6 +722,18 @@ def _shutdown():
 
 
 atexit.register(_shutdown)
+
+
+def _execute(source, scope):
+    filename = '<execute>'
+    varname = '__across_ret'
+    mod = compile(source, filename, 'exec', ast.PyCF_ONLY_AST)
+    if mod.body and isinstance(mod.body[-1], ast.Expr):
+        mod.body[-1] = ast.Assign(
+            [ast.Name(varname, ast.Store(), lineno=0, col_offset=0)],
+            mod.body[-1].value, lineno=0, col_offset=0)
+    exec(compile(mod, filename, 'exec'), scope)
+    return scope.get(varname)
 
 
 def _load_exception(obj):
