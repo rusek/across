@@ -9,6 +9,9 @@ import traceback
 import io
 import queue
 import ast
+import socket
+import linecache
+import os
 
 
 _version = (0, 1, 0)
@@ -759,50 +762,69 @@ def _dump_exception(exc):
     )
 
 
-def _patched_code_name(code, name):
-    # argument order is described in help(types.CodeType)
-    return types.CodeType(
-        code.co_argcount,
-        code.co_kwonlyargcount,
-        code.co_nlocals,
-        code.co_stacksize,
-        code.co_flags,
-        code.co_code,
-        code.co_consts,
-        code.co_names,
-        code.co_varnames,
-        code.co_filename,
-        name,
-        code.co_firstlineno,
-        code.co_lnotab,
-        code.co_freevars,
-        code.co_cellvars,
-    )
+def _get_process_name():
+    return '%s:%s' % (socket.gethostname(), os.getpid())
 
 
 def _dump_traceback(tb):
-    result = []
+    entries = []
+    packed_tb = [(_get_process_name(), entries)]
     while tb is not None:
-        code = tb.tb_frame.f_code
-        result.append((code.co_filename, tb.tb_lineno, code.co_name))
+        frame = tb.tb_frame
+        globs = frame.f_globals
+        if tb.tb_next is None and _packed_tb_var in globs:
+            packed_tb += globs[_packed_tb_var]
+        else:
+            code = frame.f_code
+            filename, lineno = code.co_filename, tb.tb_lineno
+            line = linecache.getline(filename, lineno, globs)
+            entries.append((filename, lineno, code.co_name, line))
         tb = tb.tb_next
-    return result
+    return packed_tb
 
 
-def _load_traceback(obj):
-    prev_var = '_e'
-    globs = {prev_var: ZeroDivisionError}
-    for i, (filename, lineno, name) in enumerate(reversed(obj)):
-        this_var = '_%d' % i
-        eval(compile('%sdef %s(): raise %s()' % ('\n' * (lineno - 1), this_var, prev_var), filename, 'exec'), globs)
-        prev_var = this_var
-        func = globs[this_var]
-        func.__code__ = _patched_code_name(func.__code__, name)
+_packed_tb_var = '__across_packed_tb'
+_code_tpl = compile('raise ValueError', '<traceback generator>', 'exec')
+
+
+# This function creates a types.TracebackType object (which requires raising some exception, by the way)
+# that is specifically crafted so that when 'traceback' module tries to format it, 'formatted_tb' string
+# is printed as well.
+def _generate_traceback_object(formatted_tb, packed_tb):
+    # argument order is described in help(types.CodeType)
+    code = types.CodeType(
+        _code_tpl.co_argcount,
+        _code_tpl.co_kwonlyargcount,
+        _code_tpl.co_nlocals,
+        _code_tpl.co_stacksize,
+        _code_tpl.co_flags,
+        _code_tpl.co_code,
+        _code_tpl.co_consts,
+        _code_tpl.co_names,
+        _code_tpl.co_varnames,
+        _code_tpl.co_filename,
+        '%s\n%s' % (_code_tpl.co_name, formatted_tb.rstrip()),
+        _code_tpl.co_firstlineno,
+        _code_tpl.co_lnotab,
+        _code_tpl.co_freevars,
+        _code_tpl.co_cellvars,
+    )
+
     try:
-        globs[prev_var]()
-    except ZeroDivisionError:
-        globs.clear()
+        exec(code, {_packed_tb_var: packed_tb})
+    except ValueError:
         return sys.exc_info()[2].tb_next
+
+
+def _load_traceback(packed_tb):
+    buf = []
+    for procname, entries in packed_tb:
+        buf.append('  [Returned from process "%s"]\n' % (procname, ))
+        for filename, lineno, name, line in entries:
+            buf.append('  File "%s", line %d, in %s\n' % (filename, lineno, name))
+            if line:
+                buf.append('    %s\n' % (line.strip(), ))
+    return _generate_traceback_object(''.join(buf), packed_tb)
 
 
 # Synchronized queue implementation that can be safely used from within __del__ methods, as opposed to

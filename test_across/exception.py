@@ -1,5 +1,6 @@
 import unittest
 import pickle
+import traceback
 from .utils import Box, make_connection
 
 
@@ -36,7 +37,7 @@ class ExceptionTest(unittest.TestCase):
         self.fail('TestError not raised')
 
     def _capture_excs(self, func):
-        ref_exc = self._capture_exc(func)
+        ref_exc = self._capture_exc(func)  # reference exception
         with make_connection() as conn:
             exc = self._capture_exc(conn.call, Box(func))
         return ref_exc, exc
@@ -176,11 +177,24 @@ class ExceptionTest(unittest.TestCase):
             func1()
 
         ref_exc, exc = self._capture_excs(func2)
-        ref_tb_list = tb_to_list(ref_exc.__traceback__.tb_next)
-        tb_list = tb_to_list(exc.__traceback__)
-        for ref_tb, tb in zip(reversed(ref_tb_list), reversed(tb_list)):
-            ref_frame, frame = ref_tb.tb_frame, tb.tb_frame
-            ref_code, code = ref_frame.f_code, frame.f_code
-            self.assertEqual(ref_tb.tb_lineno, tb.tb_lineno)
-            self.assertEqual(ref_code.co_name, code.co_name)
-            self.assertEqual(ref_code.co_filename, code.co_filename)
+        # .tb_next is for skipping _capture_exc frame
+        ref_tb_lines = ''.join(traceback.format_tb(ref_exc.__traceback__.tb_next)).splitlines(True)
+        tb_lines = ''.join(traceback.format_tb(exc.__traceback__)).splitlines(True)
+        self.assertEqual(ref_tb_lines, tb_lines[-len(ref_tb_lines):])
+
+    def test_traceback_with_nested_connections(self):
+        def func_over_conn(depth):
+            if depth > 0:
+                with make_connection() as conn:
+                    conn.call(Box(func_over_conn), depth - 1)
+            else:
+                raise TestError
+
+        exc = self._capture_exc(func_over_conn, 3)
+        formatted_tb = ''.join(traceback.format_tb(exc.__traceback__))
+
+        self.assertEqual(
+            formatted_tb.count('conn.call(Box(func_over_conn), depth - 1)'),
+            3,
+            formatted_tb,
+        )

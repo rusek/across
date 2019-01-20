@@ -59,7 +59,13 @@ def _get_remote_loader(fullname):
     if is_package is None:
         raise TypeError('Loader %r for module %s does not implement is_package method' % (loader, fullname))
     package = is_package(fullname)
-    return _RemoteLoader(source, package)
+    get_filename = getattr(loader, 'get_filename', None)
+    if get_filename is None:
+        raise TypeError('Loader %r for module %s does not implement get_filename method' % (loader, fullname))
+    filename = get_filename(fullname)
+    if filename is None:
+        raise ValueError('Filename is not available for loader %r and module %r' % (loader, fullname))
+    return _RemoteLoader(source, package, filename)
 
 
 class _RemoteFinder(object):
@@ -89,14 +95,20 @@ class _RemoteFinder(object):
 
 
 class _RemoteLoader(object):
-    def __init__(self, source, package, code=None):
+    def __init__(self, source, package, filename, code=None):
         self.__source = source
         self.__package = package
+        self.__filename = filename
         self.__code = code
+
+    def get_filename(self, fullname=None):
+        # We need to apply some sort of mangling to prevent clash with local files. Appending '*' seems like
+        # a good solution, because it's rather unlikely that anyone else would create a file with '.py*' extension.
+        return self.__filename + '*'
 
     def get_code(self, fullname=None):
         if self.__code is None:
-            self.__code = compile(self.get_source(), '<string>', 'exec', dont_inherit=True)
+            self.__code = compile(self.get_source(), self.get_filename(), 'exec', dont_inherit=True)
         return self.__code
 
     def get_source(self, fullname=None):
@@ -112,7 +124,7 @@ class _RemoteLoader(object):
         exec(self.get_code(), module.__dict__)
 
     def deconstruct(self):
-        return self.__source, self.__package, self.__code
+        return self.__source, self.__package, self.__filename, self.__code
 
 
 _minimal_modules = (
