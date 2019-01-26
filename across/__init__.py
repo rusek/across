@@ -879,9 +879,9 @@ class _BootstrappedConnection(Connection):
 
 
 class Proxy(object):
-    def __init__(self, id):
+    def __init__(self, proxy_id):
         self._Proxy__conn = get_connection()
-        self.__id = id
+        self.__id = proxy_id
 
     def __deepcopy__(self, memo):
         return self._Proxy__conn.call(_get_obj, self.__id)
@@ -904,16 +904,22 @@ _safe_magic = frozenset([
     '__contains__', '__delitem__', '__getitem__', '__len__', '__setitem__', '__call__'])
 
 
-def _make_auto_proxy_type(cls):
+def _get_methods(cls):
+    return [
+        attr
+        for attr in dir(cls)
+        if callable(getattr(cls, attr)) and (not attr.startswith('_') or attr in _safe_magic)
+    ]
+
+
+def _make_auto_proxy_type(methods):
     scope = {'Proxy': Proxy, '_apply_method': _apply_method}
     source = ['class _AutoProxy(Proxy):\n']
 
-    for attr in dir(cls):
-        if not callable(getattr(cls, attr)) or (attr.startswith('_') and attr not in _safe_magic):
-            continue
+    for meth in methods:
         source.append(
             '    def {0}(self, *args, **kwargs):\n'
-            '        return self._Proxy__conn.call(_apply_method, self, {0!r}, args, kwargs)\n'.format(attr)
+            '        return self._Proxy__conn.call(_apply_method, self, {0!r}, args, kwargs)\n'.format(meth)
         )
 
     if len(source) == 1:
@@ -924,28 +930,21 @@ def _make_auto_proxy_type(cls):
 
 
 class Reference(object):
-    def __init__(self, value):
-        assert not isinstance(value, (Proxy, Reference))
-        self.value = value
+    def __init__(self, obj):
+        assert not isinstance(obj, (Proxy, Reference))
+        self.__obj = obj
 
     def __reduce__(self):
-        cls = type(self.value)
         if _conn_tls.proxy_ids is None:
             raise RuntimeError("Only 'across.Connection' objects can pickle 'across.Reference' objects")
-        proxy_id = _conn_tls.conn._put_obj(self.value)
+        methods = _get_methods(type(self.__obj))
+        proxy_id = _conn_tls.conn._put_obj(self.__obj)
         _conn_tls.proxy_ids.append(proxy_id)
-        return _make_proxy, (_types_to_names.get(cls, cls), proxy_id)
+        return _make_proxy, (proxy_id, methods)
 
 
 def ref(obj):
     return Reference(obj)
-
-
-_names_to_types = {
-    'func': types.FunctionType,
-    'builtin_func': types.BuiltinFunctionType,
-}
-_types_to_names = dict((v, k) for k, v in _names_to_types.items())
 
 
 def _apply_method(obj, name, args, kwargs):
@@ -960,13 +959,13 @@ def _apply_ref(func, args, kwargs):
     return ref(func(*args, **kwargs))
 
 
-def _make_proxy(cls, id):
-    cls = _names_to_types.get(cls, cls)
-    proxy_type = _proxy_types.get(cls)
+def _make_proxy(proxy_id, methods):
+    methods = frozenset(methods)
+    proxy_type = _proxy_types.get(methods)
     if proxy_type is None:
-        proxy_type = _proxy_types[cls] = _make_auto_proxy_type(cls)
-    _conn_tls.proxy_ids.append(id)
-    return proxy_type(id)
+        proxy_type = _proxy_types[methods] = _make_auto_proxy_type(methods)
+    _conn_tls.proxy_ids.append(proxy_id)
+    return proxy_type(proxy_id)
 
 
 def get_connection():
