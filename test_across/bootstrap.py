@@ -5,7 +5,9 @@ import sys
 import traceback
 import types
 import importlib.util
-from across._importer import _get_remote_loader
+import os.path
+import subprocess
+from across._importer import _get_remote_loader, _compile_safe_main as compile_safe_main
 from .utils import mktemp
 
 
@@ -34,6 +36,7 @@ def _import_nonexistent(name):
 
 
 fake_mod_counter = 0
+
 
 def make_fake_module(source, filename):
     class Loader:
@@ -118,3 +121,110 @@ class ImporterTest(unittest.TestCase):
         self.assertIsNone(_get_remote_loader(sys.__name__))
         self.assertIsNone(_get_remote_loader(traceback.__name__))
         self.assertIsNone(_get_remote_loader(logging.handlers.__name__))
+
+
+def create_script(script):
+    script = """
+import sys
+sys.path.insert(0, %r)
+""" % os.path.dirname(os.path.dirname(__file__)) + script
+
+    path = mktemp()
+    os.mkdir(path)
+    path = os.path.join(path, 'script.py')
+    with open(path, 'w') as fh:
+        fh.write(script)
+    return path
+
+
+class MainTest(unittest.TestCase):
+    def test_main_file(self):
+        path = create_script("""
+from test_across.bootstrap import boot_connection
+def func(): return 42
+if __name__ == '__main__':
+    with boot_connection() as conn:
+        if conn.call(func) != 42: raise AssertionError
+""")
+        subprocess.check_call([sys.executable, path])
+
+    def test_main_module(self):
+        path = create_script("""
+from test_across.bootstrap import boot_connection
+def func(): return 42
+if __name__ == '__main__':
+    with boot_connection() as conn:
+        if conn.call(func) != 42: raise AssertionError
+""")
+        subprocess.check_call(
+            [sys.executable, '-m', os.path.splitext(os.path.basename(path))[0]],
+            cwd=os.path.dirname(path),
+        )
+
+    def test_nested_connections(self):
+        path = create_script("""
+from test_across.bootstrap import boot_connection
+def func(depth):
+    if depth == 0: return 42
+    else:
+        with boot_connection() as conn: return conn.call(func, depth - 1)
+if __name__ == '__main__':
+    if func(2) != 42: raise AssertionError
+""")
+        subprocess.check_call([sys.executable, path])
+
+    def test_traceback(self):
+        path = create_script("""
+from test_across.bootstrap import boot_connection
+import traceback, sys
+def func(): raise ValueError
+if __name__ == '__main__':
+    with boot_connection() as conn:
+        try:
+            conn.call(func)
+            raise AssertionError('Exception not raised')
+        except ValueError:
+            formatted_tb = ''.join(traceback.format_exception(*sys.exc_info()))
+            if 'def func(): raise ValueError' not in formatted_tb:
+                raise AssertionError('Bad traceback: %s' % formatted_tb)
+""")
+        subprocess.check_call([sys.executable, path])
+
+    def test_unsafe_main(self):
+        path = create_script("""
+from test_across.bootstrap import boot_connection
+from across import OperationError
+def func(): return 1
+with boot_connection() as conn:
+    try:
+        conn.call(func)
+        raise AssertionError('Exception not raised')
+    except OperationError as err:
+        if '__main__ module cannot be safely imported remotely' not in str(err): raise
+""")
+        subprocess.check_call([sys.executable, path])
+
+
+class SafeMainTest(unittest.TestCase):
+    def test_safe(self):
+        for source in [
+            'if __name__ == "__main__": pass',
+        ]:
+            self.assertIsNotNone(compile_safe_main(source, '<string>'))
+
+    def test_unsafe(self):
+        for source in [
+            '',
+            'pass',
+            'id(0)',
+            'if 1: pass',
+            'if 2 + 2: pass',
+            'if 2 < 2: pass',
+            'if __name__ != "__main__": pass',
+            'if __name__ == __main__: pass',
+            'if __bad_name__ == "__main__": pass',
+            'if __name__ == "__bad_main__": pass',
+            'if __name__ == 42: pass',
+            'if __name__ == "__main__" == __name__: pass',
+        ]:
+            self.assertIsNone(compile_safe_main(source, '<string>'), source)
