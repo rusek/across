@@ -901,7 +901,7 @@ class Proxy(object):
 
 _proxy_types = {}
 _safe_magic = frozenset([
-    '__contains__', '__delitem__', '__getitem__', '__len__', '__setitem__', '__call__'])
+    '__contains__', '__delitem__', '__getitem__', '__len__', '__setitem__', '__call__', '__iter__', '__next__'])
 
 
 def _get_methods(cls):
@@ -913,13 +913,14 @@ def _get_methods(cls):
 
 
 def _make_auto_proxy_type(methods):
-    scope = {'Proxy': Proxy, '_apply_method': _apply_method}
+    scope = {'Proxy': Proxy, '_apply_method': _apply_method, '_SELF': _SELF}
     source = ['class _AutoProxy(Proxy):\n']
 
     for meth in methods:
         source.append(
             '    def {0}(self, *args, **kwargs):\n'
-            '        return self._Proxy__conn.call(_apply_method, self, {0!r}, args, kwargs)\n'.format(meth)
+            '        result = self._Proxy__conn.call(_apply_method, self, {0!r}, args, kwargs)\n'
+            '        return self if result is _SELF else result\n'.format(meth)
         )
 
     if len(source) == 1:
@@ -947,8 +948,18 @@ def ref(obj):
     return Reference(obj)
 
 
+class _SELF:
+    pass
+
+
 def _apply_method(obj, name, args, kwargs):
-    return getattr(obj, name)(*args, **kwargs)
+    result = getattr(obj, name)(*args, **kwargs)
+    if result is obj:
+        return _SELF
+    elif name == '__iter__':
+        return ref(result)
+    else:
+        return result
 
 
 def _get_obj(id):

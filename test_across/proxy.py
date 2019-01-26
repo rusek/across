@@ -159,6 +159,13 @@ class Empty(object):
     pass
 
 
+class OneToThree:
+    def __iter__(self):
+        yield 1
+        yield 2
+        yield 3
+
+
 class AutoProxyTestCase(unittest.TestCase):
     def test_empty_class(self):
         with make_connection() as conn:
@@ -182,6 +189,8 @@ class AutoProxyTestCase(unittest.TestCase):
             self.assertTrue(1 in proxy)
             self.assertFalse(4 in proxy)
             self.assertEqual(len(proxy), 3)
+            self.assertIsInstance(iter(proxy), across.Proxy)
+            self.assertEqual(list(iter(proxy)), [1, 2, 3])
 
     def test_cyclic_list(self):
         with make_connection() as conn:
@@ -209,6 +218,15 @@ class AutoProxyTestCase(unittest.TestCase):
         with make_connection() as conn:
             proxy = conn.replicate(Add())
             self.assertEqual(proxy(1, 2), 3)
+
+    def test_iterable(self):
+        with make_connection() as conn:
+            proxy = conn.call(across.ref, OneToThree())
+            self.assertIsInstance(proxy, across.Proxy)
+            it_proxy = iter(proxy)
+            self.assertIsInstance(it_proxy, across.Proxy)
+            self.assertIs(it_proxy, iter(it_proxy))
+            self.assertEqual(list(it_proxy), [1, 2, 3])
 
 
 class BrokenPickle(object):
