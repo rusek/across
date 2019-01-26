@@ -213,11 +213,11 @@ class AutoProxyTestCase(unittest.TestCase):
 
 class BrokenPickle(object):
     def __reduce__(self):
-        raise TypeError('%s is not pickleable' % (self.__class__.__name__, ))
+        raise TypeError('{} is not pickleable'.format(self.__class__.__name__))
 
 
 def _reduce_broken_unpickle(cls):
-    raise TypeError('%s is not unpickleable' % (cls.__name__, ))
+    raise TypeError('{} is not unpickleable'.format(cls.__name__))
 
 
 class BrokenUnpickle(object):

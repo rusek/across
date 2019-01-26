@@ -32,7 +32,7 @@ def _import_nonexistent(name):
     except ImportError:
         pass
     else:
-        raise AssertionError('Importing %s should fail' % (name, ))
+        raise AssertionError('Importing {} should fail'.format(name))
 
 
 fake_mod_counter = 0
@@ -51,7 +51,7 @@ def make_fake_module(source, filename):
 
     global fake_mod_counter
 
-    modname = '%s_%s' % (__name__, fake_mod_counter)
+    modname = '{}_{}'.format(__name__, fake_mod_counter)
     fake_mod_counter += 1
 
     module = sys.modules[modname] = types.ModuleType(modname)
@@ -126,8 +126,8 @@ class ImporterTest(unittest.TestCase):
 def create_script(script):
     script = """
 import sys
-sys.path.insert(0, %r)
-""" % os.path.dirname(os.path.dirname(__file__)) + script
+sys.path.insert(0, {!r})
+""".format(os.path.dirname(os.path.dirname(__file__))) + script
 
     path = mktemp()
     os.mkdir(path)
@@ -186,7 +186,7 @@ if __name__ == '__main__':
         except ValueError:
             formatted_tb = ''.join(traceback.format_exception(*sys.exc_info()))
             if 'def func(): raise ValueError' not in formatted_tb:
-                raise AssertionError('Bad traceback: %s' % formatted_tb)
+                raise AssertionError('Bad traceback: {}'.format(formatted_tb))
 """)
         subprocess.check_call([sys.executable, path])
 

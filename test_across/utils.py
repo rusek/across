@@ -226,7 +226,7 @@ class PackageTestLoader:
         for filename in sorted(os.listdir(pkg_dir)):
             if not filename.startswith('_') and filename.endswith('.py'):
                 modbase = os.path.splitext(filename)[0]
-                submodname = '%s.%s' % (modname, modbase)
+                submodname = '{}.{}'.format(modname, modbase)
                 __import__(submodname)
                 submod = sys.modules[submodname]
                 self._mods.append(submod)

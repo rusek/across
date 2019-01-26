@@ -46,7 +46,7 @@ def _get_loader_with_fullname(fullname):
                 return loader, fullname
             else:
                 if spec.loader is None:
-                    raise ValueError('%r.loader is not set' % (spec, ))
+                    raise ValueError('{!r}.loader is not set'.format(spec))
                 return spec.loader, spec.name
 
     try:
@@ -56,7 +56,7 @@ def _get_loader_with_fullname(fullname):
     if spec is None:
         return None, None
     if spec.loader is None:
-        raise ValueError('%r.loader is not set' % (spec, ))
+        raise ValueError('{!r}.loader is not set'.format(spec))
     return spec.loader, fullname
 
 
@@ -93,20 +93,20 @@ def _get_remote_loader(fullname):
         return None
     get_source = getattr(loader, 'get_source', None)
     if get_source is None:
-        raise TypeError('Loader %r for module %s does not implement get_source method' % (loader, fullname))
+        raise TypeError('Loader {!r} for module {} does not implement get_source method'.format(loader, fullname))
     source = get_source(fullname)
     if source is None:
-        raise ValueError('Source is not available for loader %r and module %r' % (loader, fullname))
+        raise ValueError('Source is not available for loader {!r} and module {}'.format(loader, fullname))
     is_package = getattr(loader, 'is_package', None)
     if is_package is None:
-        raise TypeError('Loader %r for module %s does not implement is_package method' % (loader, fullname))
+        raise TypeError('Loader {!r} for module {} does not implement is_package method'.format(loader, fullname))
     package = is_package(fullname)
     get_filename = getattr(loader, 'get_filename', None)
     if get_filename is None:
-        raise TypeError('Loader %r for module %s does not implement get_filename method' % (loader, fullname))
+        raise TypeError('Loader {!r} for module {} does not implement get_filename method'.format(loader, fullname))
     filename = get_filename(fullname)
     if filename is None:
-        raise ValueError('Filename is not available for loader %r and module %r' % (loader, fullname))
+        raise ValueError('Filename is not available for loader {!r} and module {}'.format(loader, fullname))
     return _RemoteLoader(source, package, filename)
 
 
@@ -188,10 +188,10 @@ def get_bootstrap_line():
     for fullname in _minimal_modules:
         loader = _get_remote_loader(fullname)
         if loader is None:
-            raise ImportError('%s not found' % (fullname, ))
+            raise ImportError('{} not found'.format(fullname))
         modules[fullname] = loader.deconstruct()
-    return ("__across_vars=%r,%r,{};exec(__across_vars[0][__across_vars[1]][0],__across_vars[2]);"
-            "__across_vars[2]['_bootstrap'](__across_vars[0],__across_vars[1])\n" % (modules, __name__))
+    return ("__across_vars={!r},{!r},{{}};exec(__across_vars[0][__across_vars[1]][0],__across_vars[2]);"
+            "__across_vars[2]['_bootstrap'](__across_vars[0],__across_vars[1])\n".format(modules, __name__))
 
 
 def _module_from_spec(spec):
@@ -224,7 +224,7 @@ class _LazyMain:
 
 def _bootstrap(data, name):
     if name in sys.modules:
-        raise RuntimeError('%s already in sys.modules' % (name, ))
+        raise RuntimeError('{} already in sys.modules'.format(name))
 
     tmp_loader = _RemoteLoader(*data[name])
     spec = importlib.util.spec_from_loader(name, tmp_loader)

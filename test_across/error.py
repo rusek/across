@@ -204,7 +204,7 @@ class ProtocolErrorTest(unittest.TestCase):
     def test_apply_in_greeting_state(self):
         with self.assertRaisesRegex(
             across.ProtocolError,
-            'Invalid message in greeting state: %r' % (across._APPLY, )
+            'Invalid message in greeting state: {!r}'.format(across._APPLY)
         ):
             msg = across._Message()
             msg.put_uint(across._APPLY)
@@ -213,7 +213,7 @@ class ProtocolErrorTest(unittest.TestCase):
     def test_greeting_in_ready_state(self):
         with self.assertRaisesRegex(
             across.ProtocolError,
-            'Invalid message in ready state: %r' % (across._GREETING, )
+            'Invalid message in ready state: {!r}'.format(across._GREETING)
         ):
             msg = across._Message()
             msg.put_uint(across._GREETING)

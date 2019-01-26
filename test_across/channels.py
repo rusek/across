@@ -258,7 +258,7 @@ def snoop_socket(chan):
     for obj in chan.__dict__.values():
         if isinstance(obj, socket.SocketType):
             return obj
-    raise Exception('Socket not found in %r' % (chan, ))
+    raise Exception('Socket not found in {!r}'.format(chan))
 
 
 class TCPTest(ChannelTest):

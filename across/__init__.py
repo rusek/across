@@ -15,7 +15,7 @@ import os
 
 
 _version = (0, 1, 0)
-__version__ = '%d.%d.%d' % _version
+__version__ = '{}.{}.{}'.format(*_version)
 
 
 class _Framer:
@@ -270,8 +270,8 @@ def _get_superblock():
 def get_bios():
     to_skip = _SUPERBLOCK_SIZE + 4
     to_send = struct.pack('>IB', _MAGIC, _BIOS) + b'\0' * (_SUPERBLOCK_SIZE - 5)
-    return ("import sys;i,o=sys.stdin.buffer,sys.stdout.buffer;o.write(%r);o.flush();i.read(%r);"
-            "exec(i.readline())" % (to_send, to_skip))
+    return ("import sys;i,o=sys.stdin.buffer,sys.stdout.buffer;o.write({!r});o.flush();i.read({!r});"
+            "exec(i.readline())".format(to_send, to_skip))
 
 
 def _get_greeting_frame(timeout_ms):
@@ -475,7 +475,7 @@ class Connection:
             except Exception as error:
                 for proxy_id in proxy_ids:
                     del self.__objs[proxy_id]
-                raise OperationError('Pickling failed: %s' % (error, ))
+                raise OperationError('Pickling failed: {}'.format(error))
 
     def __deserialize(self, msg):
         proxy_ids = []
@@ -491,7 +491,7 @@ class Connection:
                     for proxy_id in leaked_proxy_ids:
                         msg.put_uint(proxy_id)
                     self.__sender.send_frame(msg.as_bytes())
-                raise OperationError('Unpickling failed: %s' % (error, ))
+                raise OperationError('Unpickling failed: {}'.format(error))
 
     def __receiver_loop(self):
         try:
@@ -526,7 +526,7 @@ class Connection:
             superblock = self.__framer.recv_superblock(_SUPERBLOCK_SIZE)
             magic, mode = struct.unpack_from('>IB', superblock)
             if _MAGIC != magic:
-                raise ProtocolError('Invalid magic: 0x%x' % (magic, ))
+                raise ProtocolError('Invalid magic: 0x{:x}'.format(magic))
             if mode == _OS:
                 self.__sender.send_frame(_get_greeting_frame(self.__timeout_ms))
                 break
@@ -536,7 +536,7 @@ class Connection:
                 self.__sender.send_frame(payload)
                 self.__sender.send_superblock(_get_superblock())
             else:
-                raise ProtocolError('Invalid mode: %d' % (mode, ))
+                raise ProtocolError('Invalid mode: {}'.format(mode))
 
     def __receive_msgs(self):
         while True:
@@ -548,7 +548,7 @@ class Connection:
                 handler = self.__handlers_locked.get(msg_type)
                 if handler is None:
                     handlers_name = self.__handlers_locked[None]
-                    raise ProtocolError('Invalid message in %s state: %d' % (handlers_name, msg_type))
+                    raise ProtocolError('Invalid message in {} state: {}'.format(handlers_name, msg_type))
                 if handler(self, msg) is False:
                     break
 
@@ -557,9 +557,8 @@ class Connection:
         across_version = (msg.get_uint(), msg.get_uint(), msg.get_uint())  # unused for now
         timeout_ms = msg.get_uint()
         if (python_version[0] >= 3) != (sys.version_info[0] >= 3):
-            raise ProtocolError(
-                'Remote python %r is not compatible with local %r' %
-                (python_version, sys.version_info[:3]))
+            raise ProtocolError('Remote python {} is not compatible with local {}'.format(
+                python_version, sys.version_info[:3]))
         if timeout_ms:
             # idle messages should be sent after a half of timeout passes
             idle_timeout = timeout_ms / 2000.0
@@ -578,7 +577,7 @@ class Connection:
         actor = self.__actors.get(actor_id)
         if actor is None:
             if not actor_id & 1:
-                raise ProtocolError('Actor not found: %d' % (actor_id, ))
+                raise ProtocolError('Actor not found: {}'.format(actor_id))
             actor = self.__actors[actor_id] = _Actor(actor_id)
             actor_thread = _ActorThread(actor, self.__tls)
             self.__actor_threads.append(actor_thread)
@@ -616,7 +615,7 @@ class Connection:
         actor_id = msg.get_uint()
         actor = self.__actors.get(actor_id)
         if actor is None:
-            raise ProtocolError('Actor not found: %d' % (actor_id, ))
+            raise ProtocolError('Actor not found: {}'.format(actor_id))
         actor.submit(self.__process_result, msg)
 
     def __process_result(self, msg):
@@ -629,7 +628,7 @@ class Connection:
         actor_id = msg.get_uint()
         actor = self.__actors.get(actor_id)
         if actor is None:
-            raise ProtocolError('Actor not found: %d' % (actor_id, ))
+            raise ProtocolError('Actor not found: {}'.format(actor_id))
         actor.submit(self.__process_error, msg)
 
     def __process_error(self, msg):
@@ -642,7 +641,7 @@ class Connection:
         actor_id = msg.get_uint()
         actor = self.__actors.get(actor_id)
         if actor is None:
-            raise ProtocolError('Actor not found: %d' % (actor_id, ))
+            raise ProtocolError('Actor not found: {}'.format(actor_id))
         actor.submit(self.__process_operation_error, msg)
 
     def __process_operation_error(self, msg):
@@ -763,7 +762,7 @@ def _dump_exception(exc):
 
 
 def _get_process_name():
-    return '%s:%s' % (socket.gethostname(), os.getpid())
+    return '{}:{}'.format(socket.gethostname(), os.getpid())
 
 
 def _dump_traceback(tb):
@@ -803,7 +802,7 @@ def _generate_traceback_object(formatted_tb, packed_tb):
         _code_tpl.co_names,
         _code_tpl.co_varnames,
         _code_tpl.co_filename,
-        '%s\n%s' % (_code_tpl.co_name, formatted_tb.rstrip()),
+        '{}\n{}'.format(_code_tpl.co_name, formatted_tb.rstrip()),
         _code_tpl.co_firstlineno,
         _code_tpl.co_lnotab,
         _code_tpl.co_freevars,
@@ -819,11 +818,11 @@ def _generate_traceback_object(formatted_tb, packed_tb):
 def _load_traceback(packed_tb):
     buf = []
     for procname, entries in packed_tb:
-        buf.append('  [Returned from process "%s"]\n' % (procname, ))
+        buf.append('  [Returned from process "{}"]\n'.format(procname))
         for filename, lineno, name, line in entries:
-            buf.append('  File "%s", line %d, in %s\n' % (filename, lineno, name))
+            buf.append('  File "{}", line {}, in {}\n'.format(filename, lineno, name))
             if line:
-                buf.append('    %s\n' % (line.strip(), ))
+                buf.append('    {}\n'.format(line.strip()))
     return _generate_traceback_object(''.join(buf), packed_tb)
 
 
@@ -913,9 +912,8 @@ def _make_auto_proxy_type(cls):
         if not callable(getattr(cls, attr)) or (attr.startswith('_') and attr not in _safe_magic):
             continue
         source.append(
-            '    def %(name)s(self, *args, **kwargs):\n'
-            '        return self._Proxy__conn.call(_apply_method, self, %(name)r, args, kwargs)\n'
-            % dict(name=attr)
+            '    def {0}(self, *args, **kwargs):\n'
+            '        return self._Proxy__conn.call(_apply_method, self, {0!r}, args, kwargs)\n'.format(attr)
         )
 
     if len(source) == 1:
