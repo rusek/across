@@ -436,28 +436,19 @@ class Connection:
             actor = self.__actors[actor_id] = self.__tls.actor = _Actor(actor_id)
             return actor
 
-    def call(*args, **kwargs):
-        try:
-            (self, func), args = args[:2], args[2:]
-        except ValueError:
-            if not args:
-                msg = "call() missing 2 required positional arguments: 'self' and 'func'"
-            else:
-                msg = "call() missing 1 required positional argument: 'func'"
-            raise TypeError(msg) from None
-
-        with self.__lock:
-            while self.__state == _STARTING:
-                self.__state_condition.wait()
-            if self.__state != _RUNNING:
+    def call(_self, _func, *args, **kwargs):
+        with _self.__lock:
+            while _self.__state == _STARTING:
+                _self.__state_condition.wait()
+            if _self.__state != _RUNNING:
                 raise DisconnectError
-            actor = self.__get_current_actor_locked()
+            actor = _self.__get_current_actor_locked()
 
         msg = _Message()
         msg.put_uint(_APPLY)
         msg.put_uint(actor.id ^ 1)
-        self.__serialize(msg, (func, args, kwargs))
-        self.__sender.send_frame(msg.as_bytes())
+        _self.__serialize(msg, (_func, args, kwargs))
+        _self.__sender.send_frame(msg.as_bytes())
         success, value = actor.run()
         if success:
             return value
@@ -679,30 +670,14 @@ class Connection:
             while self.__state in (_STARTING, _RUNNING):
                 self.__state_condition.wait()
 
-    def create(*args, **kwargs):
-        try:
-            self, func = args[:2]
-        except ValueError:
-            if not args:
-                msg = "create() missing 2 required positional arguments: 'self' and 'func'"
-            else:
-                msg = "create() missing 1 required positional argument: 'func'"
-            raise TypeError(msg) from None
-        return self.call(_apply_ref, func, args[2:], kwargs)
+    def create(_self, _func, *args, **kwargs):
+        return _self.call(_apply_ref, _func, args, kwargs)
 
     def replicate(self, obj):
         return self.call(ref, obj)
 
-    def execute(*args, **kwargs):
-        try:
-            self, source = args[:2]
-        except ValueError:
-            if not args:
-                msg = "execute() missing 2 required positional arguments: 'self' and 'source'"
-            else:
-                msg = "execute() missing 1 required positional argument: 'source'"
-            raise TypeError(msg) from None
-        return self.call(_execute, source, kwargs)
+    def execute(_self, _source, **kwargs):
+        return _self.call(_execute, _source, kwargs)
 
 
 # based on PyErr_WriteUnraisable
