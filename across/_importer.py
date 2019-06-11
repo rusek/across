@@ -222,6 +222,18 @@ class _LazyMain:
         return getattr(module, item)
 
 
+_finder = None
+
+
+def take_finder():
+    global _finder
+
+    finder = _finder
+    if finder is not None:
+        _finder = None
+    return finder
+
+
 def _bootstrap(data, name):
     if name in sys.modules:
         raise RuntimeError('{} already in sys.modules'.format(name))
@@ -243,8 +255,4 @@ def _bootstrap(data, name):
 
     sys.modules['__main__'] = _LazyMain(finder)
 
-    from across import _BootstrappedConnection
-    from across.channels import PipeChannel
-    channel = PipeChannel(sys.stdin.buffer, sys.stdout.buffer)
-    with _BootstrappedConnection(channel, finder) as conn:
-        conn.wait()
+    module._finder = finder

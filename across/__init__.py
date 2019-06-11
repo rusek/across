@@ -13,6 +13,8 @@ import socket
 import linecache
 import os
 
+from .channels import PipeChannel, SocketChannel
+
 
 _version = (0, 1, 0)
 __version__ = '{}.{}.{}'.format(*_version)
@@ -267,11 +269,17 @@ def _get_superblock():
     return struct.pack('>IB', _MAGIC, _OS) + b'\0' * (_SUPERBLOCK_SIZE - 5)
 
 
+def _run():
+    channel = PipeChannel(sys.stdin.buffer, sys.stdout.buffer)
+    with Connection(channel) as conn:
+        conn.wait()
+
+
 def get_bios():
     to_skip = _SUPERBLOCK_SIZE + 4
     to_send = struct.pack('>IB', _MAGIC, _BIOS) + b'\0' * (_SUPERBLOCK_SIZE - 5)
     return ("import sys;i,o=sys.stdin.buffer,sys.stdout.buffer;o.write({!r});o.flush();i.read({!r});"
-            "exec(i.readline())".format(to_send, to_skip))
+            "exec(i.readline());from across import _run;_run()".format(to_send, to_skip))
 
 
 def _get_greeting_frame(timeout_ms):
@@ -320,13 +328,19 @@ _CLOSED = 4
 
 
 class Connection:
-    def __init__(self, channel, timeout=None):
+    def __init__(self, channel, timeout=None, on_stopped=None):
         timeout = _sanitize_timeout(timeout)
         if timeout is not None:
             channel.set_timeout(timeout)
             timeout_ms = max(1, int(round(timeout * 1000.0)))
         else:
             timeout_ms = 0
+
+        from ._importer import take_finder
+        finder = take_finder()
+        if finder:
+            finder.set_connection(self)
+
         self.__channel = channel
         self.__timeout_ms = timeout_ms
         self.__framer = _Framer(channel)
@@ -337,6 +351,7 @@ class Connection:
         self.__cancel_error = None
         self.__handlers_locked = self.__greeting_handlers_locked
         self.__state = _STARTING
+        self.__on_stopped = on_stopped
         self.__sender.send_superblock(_get_superblock())
 
         self.__actors = {}
@@ -350,6 +365,14 @@ class Connection:
         self.__receiver_thread.start()
 
         _unclosed_connections.add(self)
+
+    @classmethod
+    def from_tcp(cls, host, port, **kwargs):
+        return cls(SocketChannel(socket.AF_INET, (host, port)), **kwargs)
+
+    @classmethod
+    def from_unix(cls, path, **kwargs):
+        return cls(SocketChannel(socket.AF_UNIX, path), **kwargs)
 
     def _get_obj(self, id):
         return self.__objs[id]
@@ -511,6 +534,9 @@ class Connection:
         with self.__lock:
             self.__state = _STOPPED
             self.__state_condition.notify_all()
+
+        if self.__on_stopped is not None:
+            self.__on_stopped(self)
 
     def __receive_superblock(self):
         while True:
@@ -845,12 +871,6 @@ class _SimpleQueue:
             self.__waiter_release()
         self.__items_append(item)
         self.__lock_release()
-
-
-class _BootstrappedConnection(Connection):
-    def __init__(self, channel, finder):
-        finder.set_connection(self)  # must be done before starting communication threads
-        super(_BootstrappedConnection, self).__init__(channel)
 
 
 class Proxy(object):
