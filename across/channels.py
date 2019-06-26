@@ -112,7 +112,7 @@ class PipeChannel(Channel):
 class ProcessChannel(PipeChannel):
     def __init__(self, args=None):
         if args is None:
-            args = [sys.executable, '-m', 'across']
+            args = [sys.executable, '-m', 'across', '--stdio', '--wait']
         process = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
         super().__init__(process.stdout, process.stdin)
         self.__process = process
@@ -168,7 +168,7 @@ class SocketChannel(Channel):
                 self.__poller.wait_send()
                 error = self.__sock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
                 if error != 0:
-                    raise socket.error(error)
+                    raise socket.error(error, os.strerror(error))
         except BaseException:
             self.__poller.close()
             if self.__sock:

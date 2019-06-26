@@ -236,3 +236,6 @@ class PackageTestLoader:
         for mod in self._mods:
             suite.addTests(loader.loadTestsFromModule(mod))
         return suite
+
+
+localhost = '127.0.0.1'

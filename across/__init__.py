@@ -374,6 +374,10 @@ class Connection:
     def from_unix(cls, path, **kwargs):
         return cls(SocketChannel(socket.AF_UNIX, path), **kwargs)
 
+    @classmethod
+    def from_socket(cls, sock, **kwargs):
+        return cls(SocketChannel(sock=sock), **kwargs)
+
     def _get_obj(self, id):
         return self.__objs[id]
 

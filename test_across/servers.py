@@ -7,7 +7,7 @@ import os
 
 import across.servers
 
-from .utils import mktemp
+from .utils import mktemp, localhost
 
 
 class SocketForServer:
@@ -87,7 +87,7 @@ def add(left, right):
 
 class ServerTest(unittest.TestCase):
     def test_tcp(self):
-        with ServerWorker(across.servers.run_tcp, '127.0.0.1', 0) as worker:
+        with ServerWorker(across.servers.run_tcp, localhost, 0) as worker:
             with across.Connection.from_tcp(*worker.address) as conn:
                 self.assertEqual(conn.call(add, 1, 2), 3)
 
@@ -98,7 +98,7 @@ class ServerTest(unittest.TestCase):
                 self.assertEqual(conn.call(add, 1, 2), 3)
 
     def test_multiple_connections(self):
-        with ServerWorker(across.servers.run_tcp, '127.0.0.1', 0) as worker:
+        with ServerWorker(across.servers.run_tcp, localhost, 0) as worker:
             num_conns = 5
 
             conns = [across.Connection.from_tcp(*worker.address) for _ in range(num_conns)]
@@ -111,14 +111,14 @@ class ServerTest(unittest.TestCase):
 
     def test_process_handler(self):
         handler = across.servers.ProcessConnectionHandler()
-        with ServerWorker(across.servers.run_tcp, '127.0.0.1', 0, handler=handler) as worker:
+        with ServerWorker(across.servers.run_tcp, localhost, 0, handler=handler) as worker:
             with across.Connection.from_tcp(*worker.address) as conn:
                 self.assertEqual(conn.call(add, 1, 2), 3)
                 self.assertNotEqual(conn.call(os.getpid), os.getpid())
 
     def test_bootstrapping_handler(self):
         handler = across.servers.BootstrappingConnectionHandler()
-        with ServerWorker(across.servers.run_tcp, '127.0.0.1', 0, handler=handler) as worker:
+        with ServerWorker(across.servers.run_tcp, localhost, 0, handler=handler) as worker:
             with across.Connection.from_tcp(*worker.address) as conn:
                 self.assertEqual(conn.call(add, 1, 2), 3)
                 self.assertNotEqual(conn.call(os.getpid), os.getpid())
@@ -133,7 +133,7 @@ class ServerTest(unittest.TestCase):
         self.__run_stopping_test(across.servers.BootstrappingConnectionHandler())
 
     def __run_stopping_test(self, handler):
-        with ServerWorker(across.servers.run_tcp, '127.0.0.1', 0, handler=handler) as worker:
+        with ServerWorker(across.servers.run_tcp, localhost, 0, handler=handler) as worker:
             conn = across.Connection.from_tcp(*worker.address)
             self.assertEqual(conn.call(add, 1, 2), 3)
         self.assertRaises(across.DisconnectError, conn.call, add, 1, 2)
