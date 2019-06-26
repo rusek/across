@@ -13,7 +13,7 @@ import socket
 import linecache
 import os
 
-from .channels import PipeChannel, SocketChannel
+from .channels import PipeChannel, SocketChannel, ProcessChannel
 
 
 _version = (0, 1, 0)
@@ -270,8 +270,7 @@ def _get_superblock():
 
 
 def _run():
-    channel = PipeChannel(sys.stdin.buffer, sys.stdout.buffer)
-    with Connection(channel) as conn:
+    with Connection.from_stdio() as conn:
         conn.wait()
 
 
@@ -378,6 +377,28 @@ class Connection:
     def from_socket(cls, sock, **kwargs):
         return cls(SocketChannel(sock=sock), **kwargs)
 
+    @classmethod
+    def from_pipes(cls, in_pipe, out_pipe, **kwargs):
+        return cls(PipeChannel(in_pipe, out_pipe, close=True), **kwargs)
+
+    @classmethod
+    def from_stdio(cls, **kwargs):
+        return cls(PipeChannel(sys.stdin.buffer, sys.stdout.buffer, close=False), **kwargs)
+
+    @classmethod
+    def from_command(cls, args, **kwargs):
+        assert isinstance(args, (list, tuple))
+        return cls(ProcessChannel(args), **kwargs)
+
+    @classmethod
+    def from_shell(cls, script, **kwargs):
+        assert isinstance(script, (str, bytes))
+        return cls(ProcessChannel(script, shell=True), **kwargs)
+
+    @classmethod
+    def from_process(cls, proc, **kwargs):
+        return cls(ProcessChannel(proc=proc), **kwargs)
+
     def _get_obj(self, id):
         return self.__objs[id]
 
@@ -398,6 +419,8 @@ class Connection:
 
     def __enter__(self):
         with self.__lock:
+            # TODO: this code is racy: remote site may close connection on its site before we notice
+            # that the connection is running
             while self.__state in (_STARTING, _STOPPING):
                 self.__state_condition.wait()
             if self.__state != _RUNNING:

@@ -77,51 +77,59 @@ class _Poller:
 
 
 class PipeChannel(Channel):
-    def __init__(self, stdin, stdout):
-        stdout.flush()
-        fcntl.fcntl(stdin, fcntl.F_SETFL, fcntl.fcntl(stdin, fcntl.F_GETFL) | os.O_NONBLOCK)
-        self.__stdin = stdin
-        self.__stdout = stdout
-        self.__stdout_fd = stdout.fileno()
+    def __init__(self, in_pipe, out_pipe, close):
+        out_pipe.flush()
+        fcntl.fcntl(in_pipe, fcntl.F_SETFL, fcntl.fcntl(in_pipe, fcntl.F_GETFL) | os.O_NONBLOCK)
+        self.__in_pipe = in_pipe
+        self.__out_pipe = out_pipe
+        self.__out_fd = out_pipe.fileno()
         self.__poller = _Poller()
-        self.__poller.setup(self.__stdout_fd, self.__stdin.fileno())
+        self.__poller.setup(self.__out_fd, self.__in_pipe.fileno())
+        self.__close = close
 
     def set_timeout(self, timeout):
         self.__poller.set_timeout(timeout)
 
     def recv(self, size):
-        data = self.__stdin.read(size)
+        data = self.__in_pipe.read(size)
         if data is not None:
             return data
         self.__poller.wait_recv()
-        data = self.__stdin.read(size)
+        data = self.__in_pipe.read(size)
         assert data is not None
         return data
 
     def send(self, data):
         self.__poller.wait_send()
-        return os.write(self.__stdout_fd, data)
+        return os.write(self.__out_fd, data)
 
     def cancel(self):
         self.__poller.cancel()
 
     def close(self):
         self.__poller.close()
+        if self.__close:
+            self.__in_pipe.close()
+            self.__out_pipe.close()
 
 
 class ProcessChannel(PipeChannel):
-    def __init__(self, args=None):
-        if args is None:
-            args = [sys.executable, '-m', 'across', '--stdio', '--wait']
-        process = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
-        super().__init__(process.stdout, process.stdin)
-        self.__process = process
+    def __init__(self, args=None, proc=None, **popen_extras):
+        if proc is None:
+            if args is None:
+                raise ValueError('Arguments must be provided if process is omitted')
+            proc = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, **popen_extras)
+        else:
+            if proc.stdin is None:
+                raise ValueError('Process standart input is not a pipe')
+            if proc.stdout is None:
+                raise ValueError('Process standart output is not a pipe')
+        super().__init__(proc.stdout, proc.stdin, close=True)
+        self.__process = proc
         self.__args = args
 
     def close(self):
         super().close()
-        self.__process.stdin.close()
-        self.__process.stdout.close()
         retcode = self.__process.wait()
         if retcode:
             raise subprocess.CalledProcessError(retcode, self.__args)

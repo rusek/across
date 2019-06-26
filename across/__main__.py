@@ -1,8 +1,6 @@
 import argparse
-import sys
 
 from . import __version__, Connection
-from .channels import PipeChannel
 from .servers import run_tcp, run_unix, BootstrappingConnectionHandler
 
 
@@ -102,16 +100,20 @@ def _run_client(args):
     elif args.address[0] == 'unix':
         conn = Connection.from_unix(args.address[1])
     elif args.address[0] == 'stdio':
-        conn = Connection(PipeChannel(sys.stdin.buffer, sys.stdout.buffer))
+        conn = Connection.from_stdio()
     else:
         raise AssertionError(args.address)
-    with conn:
+    try:
         if args.action[0] == 'wait':
             conn.wait()
         elif args.action[0] == 'execute':
             obj = conn.execute(args.action[1])
             if obj is not None:
                 print(obj)
+        else:
+            raise AssertionError(args.action)
+    finally:
+        conn.close()
 
 
 def main():
