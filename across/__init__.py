@@ -350,6 +350,7 @@ class Connection:
         self.__cancel_error = None
         self.__handlers_locked = self.__greeting_handlers_locked
         self.__state = _STARTING
+        self.__was_running = False
         self.__on_stopped = on_stopped
         self.__sender.send_superblock(_get_superblock())
 
@@ -419,10 +420,10 @@ class Connection:
 
     def __enter__(self):
         with self.__lock:
-            # TODO: this code is racy: remote site may close connection on its site before we notice
-            # that the connection is running
-            while self.__state in (_STARTING, _STOPPING):
+            while self.__state == _STARTING or (self.__state == _STOPPING and not self.__was_running):
                 self.__state_condition.wait()
+            if self.__was_running and self.__state != _CLOSED:
+                return self
             if self.__state != _RUNNING:
                 self.__set_closed_locked()
                 raise ValueError('Connection is closed')
@@ -612,6 +613,7 @@ class Connection:
         self.__sender.update_idle_timeout(idle_timeout)
         self.__handlers_locked = self.__ready_handlers_locked
         self.__state = _RUNNING
+        self.__was_running = True
         self.__state_condition.notify_all()
 
     def __handle_apply_locked(self, msg):

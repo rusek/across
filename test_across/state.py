@@ -1,7 +1,7 @@
 import unittest
 import across
 from across.channels import Channel
-from .utils import make_connection, MemoryChannel, Box
+from .utils import make_connection, make_channel_pair, MemoryChannel, Box
 
 
 class ConnectError(Exception):
@@ -44,3 +44,10 @@ class ContextManagerTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             with across.Connection(chan) as conn:
                 conn.call(Box(chan.cancel))
+
+    def test_enter_after_remote_close(self):
+        chan1, chan2 = make_channel_pair()
+        conn1, conn2 = across.Connection(chan1), across.Connection(chan2)
+        conn2.close()
+        with conn1:
+            pass

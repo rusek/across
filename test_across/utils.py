@@ -82,6 +82,11 @@ class _MemoryPipeChannel(across.channels.Channel):
         self.__stdout.close()
 
 
+def make_channel_pair():
+    pipe1, pipe2 = _MemoryPipe(), _MemoryPipe()
+    return _MemoryPipeChannel(pipe1, pipe2), _MemoryPipeChannel(pipe2, pipe1)
+
+
 class MemoryChannel(_MemoryPipeChannel):
     def __init__(self):
         pipe1, pipe2 = _MemoryPipe(), _MemoryPipe()

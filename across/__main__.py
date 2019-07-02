@@ -103,7 +103,7 @@ def _run_client(args):
         conn = Connection.from_stdio()
     else:
         raise AssertionError(args.address)
-    try:
+    with conn:
         if args.action[0] == 'wait':
             conn.wait()
         elif args.action[0] == 'execute':
@@ -112,8 +112,6 @@ def _run_client(args):
                 print(obj)
         else:
             raise AssertionError(args.action)
-    finally:
-        conn.close()
 
 
 def main():
