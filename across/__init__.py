@@ -363,6 +363,7 @@ class Connection:
         self.__obj_counter = 0
 
         self.__receiver_thread.start()
+        self._finder = finder
 
         _unclosed_connections.add(self)
 
@@ -431,6 +432,9 @@ class Connection:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
+
+    def export(self, *modules):
+        self.call(_export, modules)
 
     def close(self):
         with self.__lock:
@@ -733,6 +737,13 @@ class Connection:
 
     def execute(_self, _source, **kwargs):
         return _self.call(_execute, _source, kwargs)
+
+
+def _export(modules):
+    finder = get_connection()._finder
+    if finder is None:
+        raise ValueError('Modules may be exported only over bootstrapped connections')
+    finder.export(modules)
 
 
 # based on PyErr_WriteUnraisable

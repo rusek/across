@@ -7,15 +7,15 @@ import types
 import importlib.util
 import os.path
 import subprocess
-from across._importer import _get_remote_loader, _compile_safe_main as compile_safe_main
-from .utils import mktemp
+from across._importer import _compile_safe_main as compile_safe_main
+from .utils import mktemp, make_connection
 
 
 def subtract(left, right):
     return left - right
 
 
-def boot_connection():
+def boot_connection(modname=__name__):
     chan = across.channels.ProcessChannel([
         '/bin/sh',
         '-c',
@@ -23,7 +23,9 @@ def boot_connection():
         sys.executable,
         across.get_bios(),
     ])
-    return across.Connection(chan)
+    conn = across.Connection(chan)
+    conn.export(modname.partition('.')[0])
+    return conn
 
 
 def _import_nonexistent(name):
@@ -73,6 +75,15 @@ class BootstrapTest(unittest.TestCase):
         with boot_connection() as conn:
             self.assertEqual(conn.call(subtract, 5, 2), 3)
 
+    def test_exporting_submodule_fails(self):
+        assert '.' in __name__  # sanity check
+        with boot_connection() as conn:
+            self.assertRaises(ValueError, conn.export, __name__)
+
+    def test_exporting_over_non_bootstrapped_connection_fails(self):
+        with make_connection() as conn:
+            self.assertRaises(ValueError, conn.export, __name__.partition('.')[0])
+
     def test_importing_non_existent_module_remotely(self):
         with boot_connection() as conn:
             conn.call(_import_nonexistent, 'across_nonexistent')
@@ -110,19 +121,6 @@ class BootstrapTest(unittest.TestCase):
                 self.fail('Exception not raised')
 
 
-class ImporterTest(unittest.TestCase):
-    def test_stdlib_is_skipped(self):
-        import os
-        import sys
-        import traceback
-        import logging.handlers
-
-        self.assertIsNone(_get_remote_loader(os.__name__))
-        self.assertIsNone(_get_remote_loader(sys.__name__))
-        self.assertIsNone(_get_remote_loader(traceback.__name__))
-        self.assertIsNone(_get_remote_loader(logging.handlers.__name__))
-
-
 def create_script(script):
     script = """
 import sys
@@ -143,7 +141,7 @@ class MainTest(unittest.TestCase):
 from test_across.bootstrap import boot_connection
 def func(): return 42
 if __name__ == '__main__':
-    with boot_connection() as conn:
+    with boot_connection(__name__) as conn:
         if conn.call(func) != 42: raise AssertionError
 """)
         subprocess.check_call([sys.executable, path])
@@ -153,7 +151,7 @@ if __name__ == '__main__':
 from test_across.bootstrap import boot_connection
 def func(): return 42
 if __name__ == '__main__':
-    with boot_connection() as conn:
+    with boot_connection(__name__) as conn:
         if conn.call(func) != 42: raise AssertionError
 """)
         subprocess.check_call(
@@ -167,7 +165,7 @@ from test_across.bootstrap import boot_connection
 def func(depth):
     if depth == 0: return 42
     else:
-        with boot_connection() as conn: return conn.call(func, depth - 1)
+        with boot_connection(__name__) as conn: return conn.call(func, depth - 1)
 if __name__ == '__main__':
     if func(2) != 42: raise AssertionError
 """)
@@ -179,7 +177,7 @@ from test_across.bootstrap import boot_connection
 import traceback, sys
 def func(): raise ValueError
 if __name__ == '__main__':
-    with boot_connection() as conn:
+    with boot_connection(__name__) as conn:
         try:
             conn.call(func)
             raise AssertionError('Exception not raised')
@@ -195,7 +193,7 @@ if __name__ == '__main__':
 from test_across.bootstrap import boot_connection
 from across import OperationError
 def func(): return 1
-with boot_connection() as conn:
+with boot_connection(__name__) as conn:
     try:
         conn.call(func)
         raise AssertionError('Exception not raised')

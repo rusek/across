@@ -2,8 +2,6 @@ import sys
 import importlib
 import importlib.util
 import types
-import sysconfig
-import os.path
 import ast
 import threading
 
@@ -60,36 +58,10 @@ def _get_loader_with_fullname(fullname):
     return spec.loader, fullname
 
 
-def _is_stdlib_module(fullname):
-    fullname = fullname.partition('.')[0]
-
-    if fullname in sys.builtin_module_names:
-        return True
-
-    __import__(fullname)
-    path = sys.modules[fullname].__file__
-
-    if not path or not os.path.exists(path):
-        return False
-
-    stdlib_dirs = [sysconfig.get_path('stdlib'), sysconfig.get_path('platstdlib')]
-
-    parent_path = os.path.dirname(path)
-    if parent_path in stdlib_dirs:
-        return True
-
-    if os.path.exists(os.path.join(parent_path, '__init__.py')) and os.path.dirname(parent_path) in stdlib_dirs:
-        return True
-
-    return False
-
-
 def _get_remote_loader(fullname):
     loader, fullname = _get_loader_with_fullname(fullname)
     # this (checking if module exists) must go before _is_stdlib_module
     if loader is None:
-        return None
-    if _is_stdlib_module(fullname):
         return None
     get_source = getattr(loader, 'get_source', None)
     if get_source is None:
@@ -114,6 +86,15 @@ class _RemoteFinder(object):
     def __init__(self, loaders):
         self.__loaders = loaders
         self.__conn = None
+        self.__exported_modules = {'across'}
+
+    def export(self, modules):
+        for name in modules:
+            if '.' in name:
+                raise ValueError('Not a top-level module: {}'.format(name))
+        self.__exported_modules.update(modules)
+        if '__main__' in modules:
+            sys.modules['__main__'] = _LazyMain(self)
 
     def set_connection(self, conn):
         self.__conn = conn
@@ -126,7 +107,7 @@ class _RemoteFinder(object):
 
     def find_module(self, fullname, path=None):
         if fullname not in self.__loaders:
-            if '.' in fullname and fullname.rpartition('.')[0] not in self.__loaders:
+            if fullname.partition('.')[0] not in self.__exported_modules:
                 loader = None
             elif self.__conn is None:
                 loader = None
@@ -252,7 +233,5 @@ def _bootstrap(data, name):
     module.__loader__ = spec.loader = loaders[name] = module._RemoteLoader(*tmp_loader.deconstruct())
     finder = module._RemoteFinder(loaders)
     sys.meta_path.append(finder)
-
-    sys.modules['__main__'] = _LazyMain(finder)
 
     module._finder = finder
