@@ -7,7 +7,7 @@ import os
 
 import across.servers
 
-from .utils import mktemp, localhost
+from .utils import mktemp, localhost, localhost_ipv6
 
 
 class SocketForServer:
@@ -89,6 +89,11 @@ class ServerTest(unittest.TestCase):
     def test_tcp(self):
         with ServerWorker(across.servers.run_tcp, localhost, 0) as worker:
             with across.Connection.from_tcp(*worker.address) as conn:
+                self.assertEqual(conn.call(add, 1, 2), 3)
+
+    def test_tcp_ipv6(self):
+        with ServerWorker(across.servers.run_tcp, localhost_ipv6, 0) as worker:
+            with across.Connection.from_tcp(*worker.address[:2]) as conn:
                 self.assertEqual(conn.call(add, 1, 2), 3)
 
     def test_unix(self):

@@ -1,6 +1,7 @@
 from across.channels import SocketChannel, Channel
-from test_across.utils import par, mktemp
+from test_across.utils import par, mktemp, localhost, localhost_ipv6
 import unittest
+import unittest.mock
 import socket
 import time
 import os.path
@@ -32,8 +33,11 @@ class BasicSocketServer(Server):
         self.__sock = socket.socket(family)
         self.__sock.bind(address)
 
+    def get_address(self):
+        return self.__sock.getsockname()
+
     def create_client(self):
-        return SocketChannel(family=self.__sock.family, address=self.__sock.getsockname())
+        return SocketChannel(family=self.__sock.family, address=self.get_address())
 
     def listen(self):
         self.__sock.listen(1)
@@ -263,7 +267,7 @@ def snoop_socket(chan):
 
 class TCPTest(ChannelTest):
     def create_server(self):
-        return BasicSocketServer(family=socket.AF_INET, address=('localhost', 0))
+        return BasicSocketServer(family=socket.AF_INET, address=(localhost, 0))
 
     def test_nodelay(self):
         chan, rchan = self.connect_pair()
@@ -272,6 +276,46 @@ class TCPTest(ChannelTest):
 
         rchan.close()
         chan.close()
+
+
+class TCPTestIPv6(ChannelTest):
+    def create_server(self):
+        return BasicSocketServer(family=socket.AF_INET6, address=(localhost_ipv6, 0, 0, 0))
+
+    def test_nodelay(self):
+        chan, rchan = self.connect_pair()
+
+        self.assertEqual(snoop_socket(chan).getsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY), 1)
+
+        rchan.close()
+        chan.close()
+
+
+class ResolverTest(unittest.TestCase):
+    def test_unconnectable_address(self):
+        server1 = BasicSocketServer(family=socket.AF_INET, address=(localhost, 0))
+        server2 = BasicSocketServer(family=socket.AF_INET, address=(localhost, 0))
+        server2.listen()
+        server3 = BasicSocketServer(family=socket.AF_INET, address=(localhost, 0))
+        server3.listen()
+
+        with unittest.mock.patch('across.channels._getaddrinfo') as mock:
+            fake_address = ('fake', 777)
+            mock.return_value = [
+                (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, '', server.get_address())
+                for server in [server1, server2, server3]
+            ]
+            chan = SocketChannel(family=socket.AF_INET, address=fake_address, resolve=True)
+            chan.connect()
+            chan.send(b'a')
+            rchan = server2.accept()
+            self.assertEqual(rchan.recv(1), b'a')
+            chan.close()
+            rchan.close()
+
+        server1.close()
+        server2.close()
+        server3.close()
 
 
 class UnixTest(ChannelTest):

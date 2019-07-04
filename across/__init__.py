@@ -369,11 +369,11 @@ class Connection:
 
     @classmethod
     def from_tcp(cls, host, port, **kwargs):
-        return cls(SocketChannel(socket.AF_INET, (host, port)), **kwargs)
+        return cls(SocketChannel(family=socket.AF_UNSPEC, address=(host, port), resolve=True), **kwargs)
 
     @classmethod
     def from_unix(cls, path, **kwargs):
-        return cls(SocketChannel(socket.AF_UNIX, path), **kwargs)
+        return cls(SocketChannel(family=socket.AF_UNIX, address=path), **kwargs)
 
     @classmethod
     def from_socket(cls, sock, **kwargs):

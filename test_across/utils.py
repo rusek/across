@@ -244,3 +244,4 @@ class PackageTestLoader:
 
 
 localhost = '127.0.0.1'
+localhost_ipv6 = '::1'

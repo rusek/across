@@ -144,7 +144,12 @@ def _run_server(family, address, handler):
 
 
 def run_tcp(host, port, *, handler=None):
-    _run_server(socket.AF_INET, (host, port), handler)
+    addrinfo = socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
+    if not addrinfo:
+        # C getaddrinfo() returns one or more items, so this should hopefully never happen
+        raise RuntimeError('getaddrinfo returned empty list')
+    family, _, _, _, address = addrinfo[0]
+    _run_server(family, address, handler)
 
 
 def run_unix(path, *, handler=None):
