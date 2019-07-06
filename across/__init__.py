@@ -549,7 +549,8 @@ class Connection:
         proxy_ids = []
         with _ConnScope(self, proxy_ids=proxy_ids):
             try:
-                msg.put_bytes(pickle.dumps(obj))
+                # Use pickle protocol added in Python 3.4.
+                msg.put_bytes(pickle.dumps(obj, protocol=4))
                 msg.put_uint(len(proxy_ids))
                 for proxy_id in proxy_ids:
                     msg.put_uint(proxy_id)
