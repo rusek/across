@@ -89,7 +89,7 @@ class TimeoutTest(unittest.TestCase):
         TimeoutableQueue.last = None
         chan = ByteCountingMemoryChannel()
         remote_sender_queue = TimeoutableQueue.last
-        with across.Connection(chan, timeout=timeout) as conn:
+        with across.Connection(chan, options=across.Options(timeout=timeout)) as conn:
             conn.call(nop)  # ensure handshake is done
             for _ in range(10):
                 recv_bytes = chan.get_recv_bytes()
@@ -106,7 +106,7 @@ class TimeoutTest(unittest.TestCase):
         TimeoutableQueue.last = None
         chan = ByteCountingMemoryChannel()
         remote_sender_queue = TimeoutableQueue.last
-        with across.Connection(chan, timeout=timeout) as conn:
+        with across.Connection(chan, options=across.Options(timeout=timeout)) as conn:
             conn.call(nop)  # ensure handshake is done
             self.assertIsNone(remote_sender_queue.get_last_get_timeout())
 
@@ -115,14 +115,14 @@ class TimeoutTest(unittest.TestCase):
             10,
             10.0
         ]:
-            with across.Connection(MemoryChannel(), timeout=timeout) as conn:
+            with across.Connection(MemoryChannel(), options=across.Options(timeout=timeout)) as conn:
                 conn.call(nop)
 
     def test_max_timeout(self):
         self.assertLessEqual(across._MAX_TIMEOUT, threading.TIMEOUT_MAX)
 
     def test_large_timeout(self):
-        with across.Connection(MemoryChannel(), timeout=1.0e100) as conn:
+        with across.Connection(MemoryChannel(), options=across.Options(timeout=1.0e100)) as conn:
             conn.call(nop)
 
     def test_invalid_timeout_value(self):
@@ -133,7 +133,7 @@ class TimeoutTest(unittest.TestCase):
             float('-inf'),
         ]:
             with self.assertRaises(ValueError):
-                across.Connection(EOFChannel(), timeout=timeout)
+                across.Connection(EOFChannel(), options=across.Options(timeout=timeout))
 
     def test_invalid_timeout_type(self):
         for timeout in [
@@ -141,4 +141,4 @@ class TimeoutTest(unittest.TestCase):
             '12.0',
         ]:
             with self.assertRaises(TypeError):
-                across.Connection(EOFChannel(), timeout=timeout)
+                across.Connection(EOFChannel(), options=across.Options(timeout=timeout))

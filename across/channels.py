@@ -232,6 +232,13 @@ class ProcessChannel(PipeChannel):
         self.__process = proc
         self.__args = args
 
+    def cancel(self):
+        try:
+            self.__process.kill()
+        except OSError:  # process already terminated
+            pass
+        super().cancel()
+
     def close(self):
         super().close()
         retcode = self.__process.wait()

@@ -13,6 +13,7 @@ import socket
 import linecache
 import os
 import warnings
+import copy
 
 from .channels import PipeChannel, SocketChannel, ProcessChannel
 
@@ -295,10 +296,34 @@ def _get_greeting_frame(timeout_ms):
     return msg.as_bytes()
 
 
+class Options:
+    def __init__(self, **options):
+        self.timeout = _DEFAULT_TIMEOUT
+
+        self._ready = None
+        self._assign(options)
+
+    def copy(self, **options):
+        other = copy.copy(self)
+        other._assign(options)
+        return other
+
+    def _assign(self, options):
+        for name, value in options.items():
+            setattr(self, name, value)
+
+    # Let's be nice enough to detect typos when setting options (e.g. 'timout')
+    def __setattr__(self, name, value):
+        if not hasattr(self, name) and hasattr(self, '_ready'):
+            raise AttributeError('No option named \'{}\''.format(name))
+        super().__setattr__(name, value)
+
+
 # timeout (in ms) is transmitted as uint64; these limits help avoiding internal
 # errors when too small/large value is given; note that 1ms timeout will probably
 # sooner or later cause a connection loss; we also have to ensure that system limits
 # are not exceeded; e.g. threading.TIMEOUT_MAX is around 49 days on Windows
+_DEFAULT_TIMEOUT = 60.0
 _MIN_TIMEOUT = 0.001
 _MAX_TIMEOUT = 86400.0  # one day
 
@@ -333,8 +358,10 @@ _CLOSED = 4
 
 
 class Connection:
-    def __init__(self, channel, timeout=None, on_stopped=None):
-        timeout = _sanitize_timeout(timeout)
+    def __init__(self, channel, *, options=None, on_stopped=None):
+        if options is None:
+            options = Options()
+        timeout = _sanitize_timeout(options.timeout)
         if timeout is not None:
             channel.set_timeout(timeout)
             timeout_ms = max(1, int(round(timeout * 1000.0)))
