@@ -41,7 +41,7 @@ class LocalConnectionHandler(ConnectionHandler):
             self.__stopped_conn.close()
         except across.CancelledError:
             pass
-        except:
+        except BaseException:
             across._ignore_exception_at(self.__stopped_conn.close)
         self.__stopped_conn = None
 

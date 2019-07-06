@@ -786,7 +786,7 @@ def _ignore_exception_at(obj):
     try:
         print('Exception ignored in: {!r}'.format(obj), file=sys.stderr)
         traceback.print_exc()
-    except:
+    except BaseException:
         pass
 
 
@@ -795,7 +795,7 @@ def _shutdown():
         conn_close = next(iter(_unclosed_connections)).close
         try:
             conn_close()
-        except:
+        except BaseException:
             _ignore_exception_at(conn_close)
 
 
