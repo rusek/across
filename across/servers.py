@@ -7,6 +7,9 @@ import os.path
 import across.channels
 
 
+_windows = (sys.platform == 'win32')
+
+
 class ConnectionHandler:
     def handle_socket(self, sock):
         raise NotImplementedError
@@ -71,14 +74,29 @@ class ProcessConnectionHandler(ConnectionHandler):
         self.__procs = set()
 
     def handle_socket(self, sock):
-        proc = subprocess.Popen(
-            self._args + [str(int(sock.family))],
-            stdin=sock.fileno(),
-            stdout=subprocess.DEVNULL,
-        )
-        sock.close()
-        self.__procs.add(proc)
+        self.__procs.add(self.__create_proc(sock))
         self.__collect_procs()
+
+    if _windows:
+        def __create_proc(self, sock):
+            proc = subprocess.Popen(
+                self._args,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+            )
+            proc.stdin.write(sock.share(proc.pid))
+            proc.stdin.close()
+            sock.close()
+            return proc
+    else:
+        def __create_proc(self, sock):
+            proc = subprocess.Popen(
+                self._args + [str(int(sock.family))],
+                stdin=sock.fileno(),
+                stdout=subprocess.DEVNULL,
+            )
+            sock.close()
+            return proc
 
     def __collect_procs(self):
         for proc in self.__procs.copy():
@@ -96,11 +114,19 @@ class ProcessConnectionHandler(ConnectionHandler):
             proc.wait()
 
 
-_socket_bios = r"""import os,sys,socket,struct
+if _windows:
+    _socket_bios = r"""import socket,sys
+sock = socket.fromshare(sys.stdin.buffer.read())
+"""
+else:
+    _socket_bios = r"""import os,sys,socket
 sock = socket.fromfd(0, int(sys.argv[1]), socket.SOCK_STREAM)
 devnull_fd = os.open(os.devnull, os.O_RDONLY)
 os.dup2(devnull_fd, 0)
 os.close(devnull_fd)
+"""
+
+_socket_bios += r"""import struct
 sock.sendall(b'\xe3\x5b\x9e\x78\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00')
 def recvall(size):
     buf = b''
@@ -153,6 +179,8 @@ def run_tcp(host, port, *, handler=None):
 
 
 def run_unix(path, *, handler=None):
+    if not hasattr(socket, 'AF_UNIX'):
+        raise RuntimeError('Unix domain sockets are not available')
     if os.path.exists(path):
         os.unlink(path)
     _run_server(socket.AF_UNIX, path, handler)
@@ -164,11 +192,14 @@ def main():
     if len(sys.argv) < 2 or sys.argv[1] != _serve_arg:
         return
 
-    family = int(sys.argv[2])
-    sock = socket.fromfd(0, family, socket.SOCK_STREAM)
-    devnull_fd = os.open(os.devnull, os.O_RDONLY)
-    os.dup2(devnull_fd, 0)
-    os.close(devnull_fd)
+    if _windows:
+        sock = socket.fromshare(sys.stdin.buffer.read())
+    else:
+        family = int(sys.argv[2])
+        sock = socket.fromfd(0, family, socket.SOCK_STREAM)
+        devnull_fd = os.open(os.devnull, os.O_RDONLY)
+        os.dup2(devnull_fd, 0)
+        os.close(devnull_fd)
     with across.Connection(across.channels.SocketChannel(sock=sock)) as conn:
         conn.wait()
 

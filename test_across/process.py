@@ -3,8 +3,18 @@ import across
 import across.channels
 import operator
 import sys
-import pipes
 import subprocess
+
+from .utils import windows
+
+if windows:
+    def shell_quote(text):
+        # cmd.exe quoting is totally ridiculous, let's just handle basic case.
+        if '"' in text or text.endswith('\\'):
+            raise NotImplementedError('Quoting not implemented for {!r}'.format(text))
+        return '"{}"'.format(text)
+else:
+    from pipes import quote as shell_quote
 
 
 base_args = [sys.executable, '-m', 'across', '--stdio', '--wait']
@@ -20,7 +30,7 @@ class ProcessTestCase(unittest.TestCase):
             pass
 
     def test_from_shell(self):
-        with across.Connection.from_shell(' '.join(map(pipes.quote, base_args))) as conn:
+        with across.Connection.from_shell(' '.join(map(shell_quote, base_args))) as conn:
             self.assertEqual(conn.call(operator.add, 2, 2), 4)
 
     def test_from_process(self):

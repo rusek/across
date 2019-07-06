@@ -1,15 +1,17 @@
-import across
-import across.channels
 import threading
 import io
 import subprocess
 import pickle
-import sys
 import tempfile
 import os.path
 import atexit
 import shutil
 import unittest
+import sys
+import socket
+
+import across
+import across.channels
 
 
 class _MemoryPipe:
@@ -245,3 +247,7 @@ class PackageTestLoader:
 
 localhost = '127.0.0.1'
 localhost_ipv6 = '::1'
+
+windows = sys.platform == 'win32'
+
+skip_if_no_unix_sockets = unittest.skipUnless(hasattr(socket, 'AF_UNIX'), 'Unix domain sockets are not available')

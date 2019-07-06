@@ -7,14 +7,50 @@ import os
 
 import across.servers
 
-from .utils import mktemp, localhost, localhost_ipv6
+from .utils import mktemp, localhost, localhost_ipv6, windows, skip_if_no_unix_sockets
+
+
+if windows:
+    class Interrupter:
+        def __init__(self):
+            server = socket.socket()
+            server.bind(('127.0.0.1', 0))
+            server.listen(1)
+            self.__in_pipe = socket.socket()
+            self.__in_pipe.connect(server.getsockname())
+            self.__out_pipe  = server.accept()[0]
+            server.close()
+
+        def fileno(self):
+            return self.__in_pipe.fileno()
+
+        def interrupt(self):
+            self.__out_pipe.send(b'\0')
+
+        def close(self):
+            self.__in_pipe.close()
+            self.__out_pipe.close()
+else:
+    class Interrupter:
+        def __init__(self):
+            self.__pipe = os.pipe()
+
+        def fileno(self):
+            return self.__pipe[0]
+
+        def interrupt(self):
+            os.write(self.__pipe[1], b'\0')
+
+        def close(self):
+            os.close(self.__pipe[0])
+            os.close(self.__pipe[1])
 
 
 class SocketForServer:
     def __init__(self):
         self.__sock = None
+        self.__interrupter = Interrupter()
         self.__listening = threading.Event()
-        self.__interrupt_pipe = os.pipe()
 
     def __getattr__(self, item):
         return getattr(self.__sock, item)
@@ -29,10 +65,9 @@ class SocketForServer:
         self.__listening.set()
 
     def accept(self):
-        readable_fds, _, _ = select.select([self.__sock, self.__interrupt_pipe[0]], [], [])
-        if self.__interrupt_pipe[0] in readable_fds:
-            os.close(self.__interrupt_pipe[0])
-            os.close(self.__interrupt_pipe[1])
+        readable_fds, _, _ = select.select([self.__sock, self.__interrupter], [], [])
+        if self.__interrupter in readable_fds:
+            self.__interrupter.close()
             raise KeyboardInterrupt
 
         return self.__sock.accept()
@@ -41,7 +76,7 @@ class SocketForServer:
         return self.__listening.wait(timeout)
 
     def interrupt(self):
-        os.write(self.__interrupt_pipe[1], b'\0')
+        self.__interrupter.interrupt()
 
 
 class ServerWorker:
@@ -96,12 +131,6 @@ class ServerTest(unittest.TestCase):
             with across.Connection.from_tcp(*worker.address[:2]) as conn:
                 self.assertEqual(conn.call(add, 1, 2), 3)
 
-    def test_unix(self):
-        path = mktemp()
-        with ServerWorker(across.servers.run_unix, path):
-            with across.Connection.from_unix(path) as conn:
-                self.assertEqual(conn.call(add, 1, 2), 3)
-
     def test_multiple_connections(self):
         with ServerWorker(across.servers.run_tcp, localhost, 0) as worker:
             num_conns = 5
@@ -143,3 +172,12 @@ class ServerTest(unittest.TestCase):
             self.assertEqual(conn.call(add, 1, 2), 3)
         self.assertRaises(across.DisconnectError, conn.call, add, 1, 2)
         self.assertRaises(Exception, conn.close)
+
+
+@skip_if_no_unix_sockets
+class UnixServerTest(unittest.TestCase):
+    def test_unix(self):
+        path = mktemp()
+        with ServerWorker(across.servers.run_unix, path):
+            with across.Connection.from_unix(path) as conn:
+                self.assertEqual(conn.call(add, 1, 2), 3)

@@ -3,11 +3,13 @@ import unittest
 import queue
 import threading
 import collections
+import errno
 
 import across
 import across.channels
-import errno
-from test_across.utils import MemoryChannel
+
+
+from .utils import MemoryChannel
 
 
 class EOFChannel(across.channels.Channel):
@@ -115,6 +117,9 @@ class TimeoutTest(unittest.TestCase):
         ]:
             with across.Connection(MemoryChannel(), timeout=timeout) as conn:
                 conn.call(nop)
+
+    def test_max_timeout(self):
+        self.assertLessEqual(across._MAX_TIMEOUT, threading.TIMEOUT_MAX)
 
     def test_large_timeout(self):
         with across.Connection(MemoryChannel(), timeout=1.0e100) as conn:

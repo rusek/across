@@ -1,6 +1,6 @@
 import across
 
-from .utils import par, mktemp, localhost
+from .utils import par, mktemp, localhost, skip_if_no_unix_sockets
 
 import unittest
 import subprocess
@@ -57,6 +57,32 @@ class MainTest(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(int(out.strip()), os.getpid())
 
+    def test_bad_usage(self):
+        args_list = [
+            # no action/address
+            [],
+            # no action
+            ['--stdio'],
+            # no address
+            ['--wait'],
+            # stdio in server mode
+            ['--server', '--stdio'],
+            # action in server mode
+            ['--server', '--tcp', '{}:0'.format(localhost), '--execute', 'pass'],
+            # bad TCP addresses
+            ['--server', '--tcp', ''],
+            ['--server', '--tcp', 'bad'],
+            ['--server', '--tcp', '{}:bad'.format(localhost)],
+        ]
+        for args in args_list:
+            process = spawn_main(args, stderr=subprocess.PIPE)
+            out, err = process.communicate()
+            self.assertEqual(process.wait(), 2)
+            self.assertEqual(out, b'')
+
+
+@skip_if_no_unix_sockets
+class UnixMainTest(unittest.TestCase):
     def test_unix_client(self):
         path = mktemp()
         sock = socket.socket(socket.AF_UNIX)
@@ -87,26 +113,3 @@ class MainTest(unittest.TestCase):
         sock.close()
         process.stdin.close()
         process.stdout.close()
-
-    def test_bad_usage(self):
-        args_list = [
-            # no action/address
-            [],
-            # no action
-            ['--stdio'],
-            # no address
-            ['--wait'],
-            # stdio in server mode
-            ['--server', '--stdio'],
-            # action in server mode
-            ['--server', '--tcp', '{}:0'.format(localhost), '--execute', 'pass'],
-            # bad TCP addresses
-            ['--server', '--tcp', ''],
-            ['--server', '--tcp', 'bad'],
-            ['--server', '--tcp', '{}:bad'.format(localhost)],
-        ]
-        for args in args_list:
-            process = spawn_main(args, stderr=subprocess.PIPE)
-            out, err = process.communicate()
-            self.assertEqual(process.wait(), 2)
-            self.assertEqual(out, b'')

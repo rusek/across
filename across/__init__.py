@@ -12,8 +12,13 @@ import ast
 import socket
 import linecache
 import os
+import warnings
 
 from .channels import PipeChannel, SocketChannel, ProcessChannel
+
+
+if sys.version_info < (3, 4):
+    warnings.warn('Python versions older than 3.4 are not supported')
 
 
 _version = (0, 1, 0)
@@ -292,9 +297,10 @@ def _get_greeting_frame(timeout_ms):
 
 # timeout (in ms) is transmitted as uint64; these limits help avoiding internal
 # errors when too small/large value is given; note that 1ms timeout will probably
-# sooner or later cause a connection loss
+# sooner or later cause a connection loss; we also have to ensure that system limits
+# are not exceeded; e.g. threading.TIMEOUT_MAX is around 49 days on Windows
 _MIN_TIMEOUT = 0.001
-_MAX_TIMEOUT = 365 * 24 * 60 * 60
+_MAX_TIMEOUT = 86400.0  # one day
 
 
 def _sanitize_timeout(timeout):
@@ -373,6 +379,8 @@ class Connection:
 
     @classmethod
     def from_unix(cls, path, **kwargs):
+        if not hasattr(socket, 'AF_UNIX'):
+            raise RuntimeError('Unix domain sockets are not available')
         return cls(SocketChannel(family=socket.AF_UNIX, address=path), **kwargs)
 
     @classmethod

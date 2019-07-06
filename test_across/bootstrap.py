@@ -16,13 +16,13 @@ def subtract(left, right):
 
 
 def boot_connection(modname=__name__):
+    empty_dir = mktemp()
+    os.mkdir(empty_dir)
     chan = across.channels.ProcessChannel([
-        '/bin/sh',
-        '-c',
-        'cd / && "$0" -c "$1"',
         sys.executable,
+        '-c',
         across.get_bios(),
-    ])
+    ], cwd=empty_dir)
     conn = across.Connection(chan)
     conn.export(modname.partition('.')[0])
     return conn

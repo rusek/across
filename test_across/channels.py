@@ -1,14 +1,16 @@
-from across.channels import SocketChannel, Channel
-from test_across.utils import par, mktemp, localhost, localhost_ipv6
 import unittest
 import unittest.mock
 import socket
 import time
 import os.path
 
+from across.channels import SocketChannel, Channel
+
+from .utils import par, mktemp, localhost, localhost_ipv6, windows, skip_if_no_unix_sockets
+
 
 def get_open_fds():
-    if os.path.isdir('/proc/self/fd'):
+    if not windows and os.path.isdir('/proc/self/fd'):
         return set(os.listdir('/proc/self/fd'))
     else:
         return set()
@@ -318,6 +320,7 @@ class ResolverTest(unittest.TestCase):
         server3.close()
 
 
+@skip_if_no_unix_sockets
 class UnixTest(ChannelTest):
     def create_server(self):
         return BasicSocketServer(family=socket.AF_UNIX, address=mktemp())

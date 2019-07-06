@@ -3,7 +3,6 @@ import importlib
 import importlib.util
 import types
 import ast
-import threading
 
 
 # Compile given source, but skip the code inside "if __name__ == '__main__'". When such "if" statement cannot
@@ -92,9 +91,13 @@ class _RemoteFinder(object):
         for name in modules:
             if '.' in name:
                 raise ValueError('Not a top-level module: {}'.format(name))
+        had_main = ('__main__' in self.__exported_modules)
         self.__exported_modules.update(modules)
-        if '__main__' in modules:
-            sys.modules['__main__'] = _LazyMain(self)
+        if '__main__' in self.__exported_modules and not had_main:
+            # I originally injected fake module here with __getattr__ loading the module lazily, but that
+            # didn't work correctly on CPython 3.7 (ImportError raised when _compile_safe_main returns None
+            # was swallowed by interpreter).
+            sys.modules.pop('__main__', None)
 
     def set_connection(self, conn):
         self.__conn = conn
@@ -184,23 +187,6 @@ def _module_from_spec(spec):
     if spec.submodule_search_locations is not None:
         module.__path__ = spec.submodule_search_locations
     return module
-
-
-class _LazyMain:
-    def __init__(self, finder):
-        self.__finder = finder
-        self.__lock = threading.Lock()
-
-    def __getattr__(self, item):
-        with self.__lock:
-            module = sys.modules['__main__']
-            if module is self:
-                spec = self.__finder.find_spec('__main__')
-                if spec is None:
-                    raise ImportError('No module named __main__')
-                module = sys.modules['__main__'] = _module_from_spec(spec)
-                spec.loader.exec_module(module)
-        return getattr(module, item)
 
 
 _finder = None

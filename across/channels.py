@@ -2,9 +2,12 @@ import threading
 import subprocess
 import select
 import os
-import fcntl
+import sys
 import socket
 import errno
+
+
+_windows = (sys.platform == 'win32')
 
 
 class Channel:
@@ -27,101 +30,191 @@ class Channel:
         pass
 
 
-class _Poller:
-    def __init__(self):
-        self.__pipe = None
-        self.__cancel_lock = threading.Lock()
-        self.__cancelled = False
-        self.__send_poll = None
-        self.__recv_poll = None
-        self.__timeout_ms = None
+def _make_timeout_error():
+    return OSError(errno.ETIMEDOUT, os.strerror(errno.ETIMEDOUT))
 
-    def set_timeout(self, timeout):
-        self.__timeout_ms = max(1, int(round(timeout * 1000)))
 
-    def assign(self, send_fd, recv_fd):
-        with self.__cancel_lock:
-            if self.__cancelled:
-                raise ValueError('Channel is cancelled')
-            if not self.__pipe:
-                self.__pipe = os.pipe()
-            self.__send_poll = select.poll()
-            self.__send_poll.register(self.__pipe[0], select.POLLIN)
-            self.__send_poll.register(send_fd, select.POLLOUT)
-            self.__recv_poll = select.poll()
-            self.__recv_poll.register(self.__pipe[0], select.POLLIN)
-            self.__recv_poll.register(recv_fd, select.POLLIN)
+def _make_cancelled_error():
+    return ValueError('Channel is cancelled')
 
-    def wait_recv(self):
-        if not self.__recv_poll.poll(self.__timeout_ms):
-            raise OSError(errno.ETIMEDOUT, os.strerror(errno.ETIMEDOUT))
-        if self.__cancelled:
-            raise ValueError('Channel is cancelled')
 
-    def wait_send(self):
-        if not self.__send_poll.poll(self.__timeout_ms):
-            raise OSError(errno.ETIMEDOUT, os.strerror(errno.ETIMEDOUT))
-        if self.__cancelled:
-            raise ValueError('Channel is cancelled')
-
-    def cancel(self):
-        with self.__cancel_lock:
-            self.__cancelled = True
-            if self.__pipe:
-                os.write(self.__pipe[1], b'\0')
-
-    def is_cancelled(self):
-        return self.__cancelled
-
-    def close(self):
-        with self.__cancel_lock:
-            if self.__pipe:
-                os.close(self.__pipe[0])
-                os.close(self.__pipe[1])
-                self.__pipe = None
-
-    def __del__(self):
-        if self.__pipe:
-            os.close(self.__pipe[0])
-            os.close(self.__pipe[1])
+if _windows:
+    class _Poller:
+        def __init__(self):
             self.__pipe = None
+            self.__cancel_lock = threading.Lock()
+            self.__cancelled = False
+            self.__send_fd = None
+            self.__recv_fd = None
+            self.__timeout = None
+
+        def __create_pipe(self):
+            sock = socket.socket()
+            sock.bind(('127.0.0.1', 0))
+            sock.listen(1)
+            in_pipe = socket.socket()
+            in_pipe.connect(sock.getsockname())
+            out_pipe = sock.accept()[0]
+            sock.close()
+            self.__pipe = in_pipe, out_pipe
+
+        def set_timeout(self, timeout):
+            self.__timeout = timeout
+
+        def assign(self, send_fd, recv_fd):
+            with self.__cancel_lock:
+                if self.__cancelled:
+                    raise _make_cancelled_error()
+                if not self.__pipe:
+                    self.__create_pipe()
+                self.__send_fd = send_fd
+                self.__recv_fd = recv_fd
+
+        def wait_recv(self):
+            rlist, _, _ = select.select([self.__pipe[0], self.__recv_fd], [], [], self.__timeout)
+            if self.__cancelled:
+                raise _make_cancelled_error()
+            if not rlist:
+                raise _make_timeout_error()
+
+        def wait_send(self):
+            _, wlist, elist = select.select([self.__pipe[0]], [self.__send_fd], [self.__send_fd], self.__timeout)
+            if self.__cancelled:
+                raise _make_cancelled_error()
+            if not wlist and not elist:
+                raise _make_timeout_error()
+
+        def cancel(self):
+            with self.__cancel_lock:
+                self.__cancelled = True
+                if self.__pipe:
+                    self.__pipe[1].send(b'\0')
+
+        def is_cancelled(self):
+            return self.__cancelled
+
+        def close(self):
+            with self.__cancel_lock:
+                if self.__pipe:
+                    self.__pipe[0].close()
+                    self.__pipe[1].close()
+                    self.__pipe = None
+else:
+    class _Poller:
+        def __init__(self):
+            self.__pipe = None
+            self.__cancel_lock = threading.Lock()
+            self.__cancelled = False
+            self.__send_poll = None
+            self.__recv_poll = None
+            self.__timeout_ms = None
+
+        def set_timeout(self, timeout):
+            self.__timeout_ms = max(1, int(round(timeout * 1000)))
+
+        def assign(self, send_fd, recv_fd):
+            with self.__cancel_lock:
+                if self.__cancelled:
+                    raise _make_cancelled_error()
+                if not self.__pipe:
+                    self.__pipe = os.pipe()
+                self.__send_poll = select.poll()
+                self.__send_poll.register(self.__pipe[0], select.POLLIN)
+                self.__send_poll.register(send_fd, select.POLLOUT)
+                self.__recv_poll = select.poll()
+                self.__recv_poll.register(self.__pipe[0], select.POLLIN)
+                self.__recv_poll.register(recv_fd, select.POLLIN)
+
+        def wait_recv(self):
+            if not self.__recv_poll.poll(self.__timeout_ms):
+                raise _make_timeout_error()
+            if self.__cancelled:
+                raise _make_cancelled_error()
+
+        def wait_send(self):
+            if not self.__send_poll.poll(self.__timeout_ms):
+                raise _make_timeout_error()
+            if self.__cancelled:
+                raise _make_cancelled_error()
+
+        def cancel(self):
+            with self.__cancel_lock:
+                self.__cancelled = True
+                if self.__pipe:
+                    os.write(self.__pipe[1], b'\0')
+
+        def is_cancelled(self):
+            return self.__cancelled
+
+        def close(self):
+            with self.__cancel_lock:
+                if self.__pipe:
+                    os.close(self.__pipe[0])
+                    os.close(self.__pipe[1])
+                    self.__pipe = None
+
+        def __del__(self):
+            self.close()
 
 
-class PipeChannel(Channel):
-    def __init__(self, in_pipe, out_pipe, close):
-        out_pipe.flush()
-        fcntl.fcntl(in_pipe, fcntl.F_SETFL, fcntl.fcntl(in_pipe, fcntl.F_GETFL) | os.O_NONBLOCK)
-        self.__in_pipe = in_pipe
-        self.__out_pipe = out_pipe
-        self.__out_fd = out_pipe.fileno()
-        self.__poller = _Poller()
-        self.__poller.assign(self.__out_fd, self.__in_pipe.fileno())
-        self.__close = close
+if _windows:
+    # No support for timeouts and cancellation on Windows.
+    class PipeChannel(Channel):
+        def __init__(self, in_pipe, out_pipe, close):
+            self.__in_pipe = in_pipe
+            self.__out_pipe = out_pipe
+            self.__close = close
 
-    def set_timeout(self, timeout):
-        self.__poller.set_timeout(timeout)
+        def recv(self, size):
+            return self.__in_pipe.read(size)
 
-    def recv(self, size):
-        data = self.__in_pipe.read(size)
-        if data is not None:
+        def send(self, data):
+            self.__out_pipe.write(data)
+            self.__out_pipe.flush()
+            return len(data)
+
+        def close(self):
+            if self.__close:
+                self.__in_pipe.close()
+                self.__out_pipe.close()
+else:
+    import fcntl
+
+    class PipeChannel(Channel):
+        def __init__(self, in_pipe, out_pipe, close):
+            out_pipe.flush()
+            fcntl.fcntl(in_pipe, fcntl.F_SETFL, fcntl.fcntl(in_pipe, fcntl.F_GETFL) | os.O_NONBLOCK)
+            self.__in_pipe = in_pipe
+            self.__out_pipe = out_pipe
+            self.__out_fd = out_pipe.fileno()
+            self.__poller = _Poller()
+            self.__poller.assign(self.__out_fd, self.__in_pipe.fileno())
+            self.__close = close
+
+        def set_timeout(self, timeout):
+            self.__poller.set_timeout(timeout)
+
+        def recv(self, size):
+            data = self.__in_pipe.read(size)
+            if data is not None:
+                return data
+            self.__poller.wait_recv()
+            data = self.__in_pipe.read(size)
+            assert data is not None
             return data
-        self.__poller.wait_recv()
-        data = self.__in_pipe.read(size)
-        assert data is not None
-        return data
 
-    def send(self, data):
-        self.__poller.wait_send()
-        return os.write(self.__out_fd, data)
+        def send(self, data):
+            self.__poller.wait_send()
+            return os.write(self.__out_fd, data)
 
-    def cancel(self):
-        self.__poller.cancel()
+        def cancel(self):
+            self.__poller.cancel()
 
-    def close(self):
-        self.__poller.close()
-        if self.__close:
-            self.__in_pipe.close()
-            self.__out_pipe.close()
+        def close(self):
+            self.__poller.close()
+            if self.__close:
+                self.__in_pipe.close()
+                self.__out_pipe.close()
 
 
 class ProcessChannel(PipeChannel):
@@ -189,11 +282,9 @@ class SocketChannel(Channel):
             self.__prepare_socket()
         try:
             self.__sock.connect(address)
-        except socket.error as error:
-            if error.errno != errno.EINPROGRESS:
-                raise
-        else:
             return
+        except BlockingIOError:
+            pass
         self.__poller.wait_send()
         error = self.__sock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
         if error != 0:
