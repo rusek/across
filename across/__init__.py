@@ -178,6 +178,7 @@ class ProtocolError(Exception):
     pass
 
 
+# TODO remove this exception
 class CancelledError(Exception):
     pass
 

@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.abspath('..'))
 import across
 
 project = 'Across'
-copyright = '2018, Krzysztof Rusek'
+copyright = '2019, Krzysztof Rusek'
 author = 'Krzysztof Rusek'
 
 # The short X.Y version
@@ -163,4 +163,6 @@ texinfo_documents = [
 # -- Options for intersphinx extension ---------------------------------------
 
 # Example configuration for intersphinx: refer to the Python standard library.
-intersphinx_mapping = {'https://docs.python.org/': None}
+intersphinx_mapping = {
+    'python': ('https://docs.python.org/3', None),
+}

@@ -14,7 +14,7 @@ if windows:
             raise NotImplementedError('Quoting not implemented for {!r}'.format(text))
         return '"{}"'.format(text)
 else:
-    from pipes import quote as shell_quote
+    from shlex import quote as shell_quote
 
 
 base_args = [sys.executable, '-m', 'across', '--stdio', '--wait']

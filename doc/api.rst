@@ -6,10 +6,102 @@ Core functionality
 
 .. module:: across
 
-.. class:: Connection(channel)
+.. class:: Connection
 
-    Connection objects enable easy interaction with remote Python processes by allowing you to execute
-    arbitrary Python functions in remote processes, and vice versa.
+    Connection lets you run Python code in a remote Python process, and vice versa.
+
+    To create a connection, use one of ``from_*`` methods documented below. Be aware that ``from_*`` methods
+    typically establish connection in background. If you want to make sure that connection handshake was successful,
+    you should use ``with`` statement:
+
+    .. code-block:: python
+
+        # __enter__ waits for handshake to complete
+        # __exit__ takes care of calling conn.close()
+        with Connection.from_tcp('wonderland', 1865) as conn:
+            conn.call(os.mkdir, '/home/alice')
+
+    However, waiting for handshake to complete is optional, so the above can be rewritten as:
+
+    .. code-block:: python
+
+        conn = Connection.from_tcp('wonderland', 1865)
+        try:
+            conn.call(os.mkdir, '/home/alice')
+        finally:
+            conn.close()
+
+    Connections are multithreaded.
+
+    .. classmethod:: from_tcp(host, port, *, options=None)
+
+        Connect to a remote host over TCP.
+
+        ``options``, if specified, should be an instance of :class:`Options` class.
+
+    .. classmethod:: from_unix(path, *, options=None)
+
+        Connect over Unix domain sockets.
+
+        ``options``, if specified, should be an instance of :class:`Options` class.
+
+    .. classmethod:: from_socket(sock, *, options=None)
+
+        Wrap an already connected socket in a :class:`Connection` object.
+
+        This method may be used by server implementations to handle accepted sockets.
+
+        ``sock`` should be a socket created with :func:`socket.socket` function.
+
+        ``options``, if specified, should be an instance of :class:`Options` class.
+
+    .. classmethod:: from_pipes(in_pipe, out_pipe, *, options=None)
+
+        Wrap a pair of input/output pipes in a :class:`Connection` object.
+
+        ``in_pipe`` and ``out_pipe`` should be file objects obtained e.g. by passing :func:`os.pipe`
+        descriptors to :func:`os.fdopen` function.
+
+        ``options``, if specified, should be an instance of :class:`Options` class.
+
+    .. classmethod:: from_stdio(*, options=None)
+
+        Create a connection over process standard input/output pipes.
+
+        ``options``, if specified, should be an instance of :class:`Options` class.
+
+    .. classmethod:: from_command(args, *, options=None)
+
+        Spawn a child process with a given list of command line arguments (first being an executable path) and
+        communicate with it over standard input/output pipes.
+
+        ``options``, if specified, should be an instance of :class:`Options` class.
+
+    .. classmethod:: from_shell(script, *, options=None)
+
+        Spawn a shell process executing a given shell script, and communicate with it over standard input/output pipes.
+
+        ``options``, if specified, should be an instance of :class:`Options` class.
+
+    .. classmethod:: from_process(proc, *, options=None)
+
+        Wrap an existing child process in a :class:`Connection` object.
+
+        ``proc`` should be an instance of :class:`subprocess.Popen` class.
+
+        ``options``, if specified, should be an instance of :class:`Options` class.
+
+    .. method:: export(*modules)
+
+        Make one or more local modules importable remotely.
+
+        Only top-level modules may be exported. When a module is exported, all its submodules are considered exported
+        as well.
+
+        This method may be used to make functions/classes defined in a local ``__main__`` module accessible
+        remotely.
+
+        When importing a module remotely, local exported modules take precedence over modules installed remotely.
 
     .. method:: call(func, /, *args, **kwargs)
 
@@ -40,19 +132,66 @@ Core functionality
 
         Create a remote copy of a given object, and return a proxy referencing it.
 
-        For :meth:`replicate` method to work, *obj* must be pickleable. This method may rairse :exc:`OperationError`
+        For :meth:`replicate` method to work, ``obj`` must be pickleable. This method may rairse :exc:`OperationError`
         to indicate an internal error (pickling / unpickling error, lost connection with a remote process, etc.).
+
+    .. method:: execute(source, /, **vars)
+
+        Execute a snippet of Python code remotely, and return result of the last expression.
+
+        .. code-block:: python
+
+            conn.execute('2 + 2')
+            conn.execute('two = 2; two + two')
+            conn.execute('x + x', x=2)
+
+    .. method:: cancel()
+
+        Cancel all operations and forcibly disconnect from a remote Python process.
+
+        This method may be called at any time, and can be used to abort e.g. ``__enter__`` or :meth:`close` methods
+        being called in a different thread. :meth:`close` after :meth:`cancel` will still take care of freeing all the
+        resources, but clean protocol shutdown will be skipped.
 
     .. method:: close()
 
         Close the connection to a remote process, and free all resources allocated by the connection.
 
         If, between opening and closing the connection, a *fatal error* occurred, then this method raises an
-        exception (e.g. :class:`ProtocolError`).
+        exception (e.g. :class:`ProtocolError`). Exception will be raised also after a remote process died
+        during communication, or :meth:`cancel` was called on a remote connection.
 
     .. method:: wait()
 
         Wait for remote process to close the connection.
+
+.. function:: get_bios()
+
+    Get a Python script that, when executed via ``python -c``, creates a connection over standard input/output pipes.
+    This script has no library dependencies, so it can be remotely executed (e.g. via ``ssh``) on machines where
+    ``across`` is not installed:
+
+    .. code-block:: python
+
+        from shlex import quote
+
+        cmd = 'python3 -c ' + quote(get_bios())
+        with Connection.from_command(['ssh', 'wonderland', cmd]):
+            conn.call(os.mkdir, '/home/alice')
+
+.. class:: Options(**options)
+
+    With options you can tweak connections for your specific use case.
+
+    .. attribute:: timeout
+
+        Timeout for communication operations: sending/receiving data, connecting to a remote host, etc. The default
+        value tries to keep a balance between detecting broken connections fast and avoiding false positives.
+        Currently, it's one minute.
+
+    .. method:: copy(**options)
+
+        Create a copy of the current options, optionally overriding some values.
 
 .. class:: Proxy
 
@@ -131,7 +270,7 @@ Core functionality
         is a pickling / unpickling error;
 
     -   *fatal errors* break the whole connection, meaning that all successive operations on that connection
-        will fail; fatal errors are signalled by raising :exc:`DisconnectError`; an example of a fatal error
+        will fail as well; fatal errors are signalled by raising :exc:`DisconnectError`; an example of a fatal error
         is an I/O error while communicating with a remote process.
 
 .. exception:: DisconnectError
@@ -181,3 +320,38 @@ Logging integration
 
             with across.Connection(...) as conn:
                 conn.call(remote_main)
+
+Servers
+-------
+
+.. module:: across.servers
+
+.. class:: ConnectionHandler
+
+    Connection handlers are responsible for wrapping accepted sockets in :class:`.Connection` objects.
+
+.. class:: LocalConnectionHandler()
+
+    Subclass of :class:`ConnectionHandler` that creates connections in the current process.
+
+.. class:: ProcessConnectionHandler()
+
+    Subclass of :class:`ConnectionHandler` that creates a child process for each accepted socket.
+
+.. class:: BootstrappingConnectionHandler()
+
+    Similar to :class:`ProcessConnectionHandler`, but created child processes perform connection bootstrapping.
+
+.. function:: run_tcp(host, port, *, handler=None)
+
+    Accept connections on a given TCP endpoint until :exc:`KeyboardInterrupt` is received.
+
+    ``handler``, if provided, should be an instance of :class:`ConnectionHandler` class.
+    Defaults to :class:`LocalConnectionHandler`.
+
+.. function:: run_unix(path, *, handler=None)
+
+    Create Unix domain socket and accept connections until :exc:`KeyboardInterrupt` is received.
+
+    ``handler``, if provided, should be an instance of :class:`ConnectionHandler` class.
+    Defaults to :class:`LocalConnectionHandler`.
