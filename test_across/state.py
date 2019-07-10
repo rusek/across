@@ -36,7 +36,7 @@ class ContextManagerTest(unittest.TestCase):
     def test_enter_after_cancel(self):
         conn = make_connection()
         conn.cancel()
-        with self.assertRaises(across.CancelledError):
+        with self.assertRaises(OSError):
             conn.__enter__()
 
     def test_exit_after_disconnect(self):

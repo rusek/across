@@ -75,7 +75,8 @@ class DisconnectErrorTest(unittest.TestCase):
     def test_close_after_cancel(self):
         conn = make_connection()
         conn.cancel()
-        with self.assertRaises(across.CancelledError):
+        # TODO maybe close() shouldn't raise exception in this case?
+        with self.assertRaises(OSError):
             conn.close()
 
     def test_connect_exception(self):

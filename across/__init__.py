@@ -14,6 +14,7 @@ import linecache
 import os
 import warnings
 import copy
+import errno
 
 from .channels import PipeChannel, SocketChannel, ProcessChannel
 
@@ -175,11 +176,6 @@ class DisconnectError(OperationError):
 
 
 class ProtocolError(Exception):
-    pass
-
-
-# TODO remove this exception
-class CancelledError(Exception):
     pass
 
 
@@ -493,7 +489,7 @@ class Connection:
                     self.__cancel_error = None
 
     def cancel(self):
-        self.__cancel(CancelledError())
+        self.__cancel(OSError(errno.ECANCELED, os.strerror(errno.ECANCELED)))
 
     def __cancel(self, error):
         with self.__lock:

@@ -93,7 +93,7 @@ class ChannelTest(unittest.TestCase):
         raise NotImplementedError
 
     def verify_exception(self, exc):
-        self.assertIsInstance(exc, (OSError, ValueError))
+        self.assertIsInstance(exc, OSError)
 
     def connect_pair(self):
         server = self.create_server()

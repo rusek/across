@@ -35,7 +35,7 @@ def _make_timeout_error():
 
 
 def _make_cancelled_error():
-    return ValueError('Channel is cancelled')
+    return OSError(errno.ECANCELED, os.strerror(errno.ECANCELED))
 
 
 if _windows:

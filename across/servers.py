@@ -39,10 +39,10 @@ class LocalConnectionHandler(ConnectionHandler):
         self.__unclosed_conns.remove(self.__stopped_conn)
         try:
             self.__stopped_conn.close()
-        except across.CancelledError:
-            pass
         except BaseException:
-            across._ignore_exception_at(self.__stopped_conn.close)
+            # Ignore exceptions after cancelling connections
+            if not self.__closing:
+                across._ignore_exception_at(self.__stopped_conn.close)
         self.__stopped_conn = None
 
     def __connection_stopped(self, conn):
