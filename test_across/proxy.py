@@ -51,14 +51,14 @@ def run_gc(conn):
 
 
 class ProxyTestCase(unittest.TestCase):
-    def test_create_without_args(self):
+    def test_call_ref_without_args(self):
         with make_connection() as conn:
-            proxy = conn.create(Counter)
+            proxy = conn.call_ref(Counter)
             self.assertIsInstance(proxy, across.Proxy)
 
     def test_deepcopy(self):
         with make_connection() as conn:
-            proxy = conn.create(Counter, 42)
+            proxy = conn.call_ref(Counter, 42)
             obj = copy.deepcopy(proxy)
             self.assertNotIsInstance(obj, across.Proxy)
             self.assertIsInstance(obj, Counter)
@@ -67,21 +67,21 @@ class ProxyTestCase(unittest.TestCase):
             self.assertEqual(obj.get(), 43)
             self.assertEqual(proxy.get(), 42)
 
-    def test_create_with_args(self):
+    def test_call_ref_with_args(self):
         with make_connection() as conn:
-            self.assertEqual(conn.create(Counter, 1).get(), 1)
-            self.assertEqual(conn.create(Counter, value=1).get(), 1)
+            self.assertEqual(conn.call_ref(Counter, 1).get(), 1)
+            self.assertEqual(conn.call_ref(Counter, value=1).get(), 1)
 
-    def test_create_special_name_handling(self):
+    def test_call_ref_special_name_handling(self):
         with make_connection() as conn:
-            proxy = conn.create(get_args, self=1)
+            proxy = conn.call_ref(get_args, self=1)
             self.assertEqual(copy.deepcopy(proxy), ((), {'self': 1}))
-            proxy = conn.create(get_args, func=1)
+            proxy = conn.call_ref(get_args, func=1)
             self.assertEqual(copy.deepcopy(proxy), ((), {'func': 1}))
             with self.assertRaises(TypeError):
-                conn.create()
+                conn.call_ref()
             with self.assertRaises(TypeError):
-                across.Connection.create()
+                across.Connection.call_ref()
 
     def test_replicate(self):
         with make_connection() as conn:
@@ -128,7 +128,7 @@ class ProxyTestCase(unittest.TestCase):
 
     def test_pickling_proxy_for_invalid_connection(self):
         with make_connection() as conn1, make_connection() as conn2:
-            proxy = conn1.create(list)
+            proxy = conn1.call_ref(list)
 
             def on_pickle():
                 with self.assertRaises(RuntimeError):
@@ -169,19 +169,19 @@ class OneToThree:
 class AutoProxyTestCase(unittest.TestCase):
     def test_empty_class(self):
         with make_connection() as conn:
-            proxy = conn.create(Empty)
+            proxy = conn.call_ref(Empty)
             obj = copy.deepcopy(proxy)
             self.assertIsInstance(obj, Empty)
 
     def test_nonexistent_attribute(self):
         with make_connection() as conn:
-            proxy = conn.create(Empty)
+            proxy = conn.call_ref(Empty)
             with self.assertRaises(AttributeError):
                 proxy.missing
 
     def test_list(self):
         with make_connection() as conn:
-            proxy = conn.create(list)
+            proxy = conn.call_ref(list)
             proxy.append(1)
             self.assertEqual(copy.deepcopy(proxy), [1])
             proxy.extend([2, 3])
@@ -194,7 +194,7 @@ class AutoProxyTestCase(unittest.TestCase):
 
     def test_cyclic_list(self):
         with make_connection() as conn:
-            proxy = conn.create(list)
+            proxy = conn.call_ref(list)
             proxy.append(proxy)
             obj = copy.deepcopy(proxy)
             self.assertEqual(len(obj), 1)
@@ -202,7 +202,7 @@ class AutoProxyTestCase(unittest.TestCase):
 
     def test_dict(self):
         with make_connection() as conn:
-            proxy = conn.create(dict)
+            proxy = conn.call_ref(dict)
             with self.assertRaises(KeyError):
                 proxy[1]
             proxy[1] = -1

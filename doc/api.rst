@@ -114,12 +114,12 @@ Core functionality
         to indicate an internal error (pickling / unpickling error, lost connection with a remote process,
         etc.).
 
-    .. method:: create(func, /, *args, **kwargs)
+    .. method:: call_ref(func, /, *args, **kwargs)
 
         Similar to :meth:`call`, but instead of passing back function return value directly, return a proxy
         referencing it. See :class:`Proxy` for more information.
 
-        :meth:`create` is useful when a given function returns an unpickleable object:
+        :meth:`call_ref` is useful when a given function returns an unpickleable object:
 
         .. code-block:: python
 
@@ -202,7 +202,7 @@ Core functionality
 
     .. code-block:: python
 
-        cheeses = conn.create(list)
+        cheeses = conn.call_ref(list)
         cheeses.append('brie')
         cheeses.append('gouda')
 
@@ -213,7 +213,7 @@ Core functionality
         def append_to(col, item):
             col.append(item)
 
-        cheeses = conn.create(list)
+        cheeses = conn.call_ref(list)
         append_to(cheeses, 'cheddar')
 
     It is also possible to retrieve a copy of a referenced object:

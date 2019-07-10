@@ -766,7 +766,7 @@ class Connection:
             while self.__state in (_STARTING, _RUNNING):
                 self.__state_condition.wait()
 
-    def create(_self, _func, *args, **kwargs):
+    def call_ref(_self, _func, *args, **kwargs):
         return _self.call(_apply_ref, _func, args, kwargs)
 
     def replicate(self, obj):
