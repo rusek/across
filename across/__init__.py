@@ -674,7 +674,14 @@ class Connection:
             with _ConnScope(self):
                 try:
                     func, args, kwargs = obj
-                    result = func(*args, **kwargs)
+                    try:
+                        result = func(*args, **kwargs)
+                    # If we allow raising OperationError between processes, then the other side wouldn't be able to
+                    # determine whether the call failed to execute, or ended up generating OperationError. This
+                    # is especially problematic for DisconnectError, which indicates that the connection is
+                    # no longer usable.
+                    except OperationError as error:
+                        raise RuntimeError('Cannot raise {} between processes'.format(error.__class__.__name__))
                 except Exception as error:
                     msg = _Message()
                     msg.put_uint(_ERROR)

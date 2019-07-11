@@ -1,6 +1,9 @@
 import unittest
 import pickle
 import traceback
+
+import across
+
 from .utils import Box, make_connection
 
 
@@ -41,6 +44,14 @@ class ExceptionTest(unittest.TestCase):
         with make_connection() as conn:
             exc = self._capture_exc(conn.call, Box(func))
         return ref_exc, exc
+
+    def test_forwarding_disconnect_error_is_forbidden(self):
+        def func():
+            raise across.DisconnectError
+
+        with make_connection() as conn:
+            with self.assertRaises(RuntimeError):
+                conn.call(Box(func))
 
     def test_context(self):
         def func():
