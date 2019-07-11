@@ -15,14 +15,15 @@ def subtract(left, right):
     return left - right
 
 
-def boot_connection(modname=__name__):
-    empty_dir = mktemp()
-    os.mkdir(empty_dir)
+def boot_connection(modname=__name__, cwd=None):
+    if cwd is None:
+        cwd = mktemp()
+        os.mkdir(cwd)
     chan = across.channels.ProcessChannel([
         sys.executable,
         '-c',
         across.get_bios(),
-    ], cwd=empty_dir)
+    ], cwd=cwd)
     conn = across.Connection(chan)
     conn.export(modname.partition('.')[0])
     return conn
@@ -119,6 +120,32 @@ class BootstrapTest(unittest.TestCase):
                 self.assertIn(source_lines[1], formatted_tb)
             else:
                 self.fail('Exception not raised')
+
+    def test_dummy_filenames_are_left_unchanged(self):
+        dummy_filename = '<string>'
+        module = make_fake_module('def func(): return __file__', dummy_filename)
+        with boot_connection() as conn:
+            self.assertEqual(conn.call(module.func), dummy_filename)
+
+    def test_filenames_are_not_repeatedly_mangled(self):
+        path = mktemp()
+        source = """
+from test_across.bootstrap import boot_connection
+def get_filename(): return __file__
+def func():
+    with boot_connection() as conn: return get_filename(), conn.call(get_filename)
+        """
+        module = make_fake_module(source, path)
+        with boot_connection() as conn:
+            first_filename, second_filename = conn.call(module.func)
+            self.assertEqual(first_filename, second_filename)
+
+    def test_local_modules_take_precendence(self):
+        path = mktemp()
+        os.mkdir(path)
+        open(os.path.join(path, __name__.partition('.')[0]) + '.py', 'w').close()
+        with boot_connection(cwd=path) as conn:
+            self.assertEqual(conn.call(subtract, 4, 3), 1)
 
 
 def create_script(script):

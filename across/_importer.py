@@ -72,12 +72,15 @@ def _get_remote_loader(fullname):
     if is_package is None:
         raise TypeError('Loader {!r} for module {} does not implement is_package method'.format(loader, fullname))
     package = is_package(fullname)
-    get_filename = getattr(loader, 'get_filename', None)
-    if get_filename is None:
-        raise TypeError('Loader {!r} for module {} does not implement get_filename method'.format(loader, fullname))
-    filename = get_filename(fullname)
-    if filename is None:
-        raise ValueError('Filename is not available for loader {!r} and module {}'.format(loader, fullname))
+    if isinstance(loader, _RemoteLoader):
+        filename = loader.get_orig_filename()
+    else:
+        get_filename = getattr(loader, 'get_filename', None)
+        if get_filename is None:
+            raise TypeError('Loader {!r} for module {} does not implement get_filename method'.format(loader, fullname))
+        filename = get_filename(fullname)
+        if filename is None:
+            raise ValueError('Filename is not available for loader {!r} and module {}'.format(loader, fullname))
     return _RemoteLoader(source, package, filename)
 
 
@@ -128,6 +131,8 @@ class _RemoteLoader(object):
         self.__code = code
 
     def get_filename(self, fullname):
+        if self.__filename.startswith('<') and self.__filename.endswith('>'):
+            return self.__filename
         # We need to apply some sort of mangling to prevent clash with local files. Appending '*' seems like
         # a good solution, because it's rather unlikely that anyone else would create a file with '.py*' extension.
         return self.__filename + '*'
@@ -155,6 +160,9 @@ class _RemoteLoader(object):
 
     def exec_module(self, module):
         exec(self.get_code(module.__name__), module.__dict__)
+
+    def get_orig_filename(self):
+        return self.__filename
 
     def deconstruct(self):
         return self.__source, self.__package, self.__filename, self.__code
@@ -218,6 +226,6 @@ def _bootstrap(data, name):
     )
     module.__loader__ = spec.loader = loaders[name] = module._RemoteLoader(*tmp_loader.deconstruct())
     finder = module._RemoteFinder(loaders)
-    sys.meta_path.append(finder)
+    sys.meta_path.insert(0, finder)
 
     module._finder = finder
