@@ -34,7 +34,9 @@ class ContextManagerTest(unittest.TestCase):
             conn.__enter__()
 
     def test_enter_after_cancel(self):
-        conn = make_connection()
+        # There are no writes to chan2, so handshake should never complete
+        chan1, chan2 = make_channel_pair()
+        conn = across.Connection(chan1)
         conn.cancel()
         with self.assertRaises(OSError):
             conn.__enter__()
