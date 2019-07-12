@@ -38,35 +38,36 @@ class _Framer:
         self.__sendall(struct.pack('>I', len(frame)) + frame)
 
     def __sendall(self, data):
-        while data:
-            size = self.__channel.send(data)
+        buffer = memoryview(data)
+        while buffer:
+            size = self.__channel.send(buffer)
             assert size > 0
-            data = data[size:]
+            buffer = buffer[size:]
 
     def recv_superblock(self, size):
         superblock = self.__recvall(size)
-        if len(superblock) != size:
+        if superblock is None:
             raise ProtocolError('Incomplete superblock')
         return superblock
 
     def recv_frame(self):
         header = self.__recvall(4)
-        if len(header) != 4:
+        if header is None:
             raise ProtocolError('Incomplete frame size')
         size, = struct.unpack('>I', header)
         frame = self.__recvall(size)
-        if len(frame) != size:
+        if frame is None:
             raise ProtocolError('Incomplete frame')
         return frame
 
     def __recvall(self, size):
-        data = b''
-        while size:
-            chunk = self.__channel.recv(size)
-            if not chunk:
-                return data
-            data += chunk
-            size -= len(chunk)
+        data = bytearray(size)
+        buffer = memoryview(data)
+        while buffer:
+            size = self.__channel.recv_into(buffer)
+            if size == 0:
+                return None
+            buffer = buffer[size:]
         return data
 
 

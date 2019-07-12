@@ -29,13 +29,13 @@ class FailingChannel(across.channels.Channel):
     def connect(self):
         self.connect_future.result()
 
-    def send(self, data):
+    def send(self, buffer):
         self.send_future.result()
-        return len(data)
+        return len(buffer)
 
-    def recv(self, size):
+    def recv_into(self, buffer):
         self.recv_future.result()
-        return b''
+        return 0
 
     def close(self):
         self.close_future.result()
@@ -110,14 +110,15 @@ class DisconnectErrorTest(unittest.TestCase):
 
 class ProtocolErrorChannel(across.channels.Channel):
     def __init__(self, data):
-        self.__data = data
+        self.__buffer = memoryview(data)
 
-    def recv(self, size):
-        data, self.__data = self.__data[:size], self.__data[size:]
-        return data
+    def recv_into(self, buffer):
+        nbytes = min(len(self.__buffer), len(buffer))
+        buffer[:nbytes], self.__buffer = self.__buffer[:nbytes], self.__buffer[nbytes:]
+        return nbytes
 
-    def send(self, data):
-        return len(data)
+    def send(self, buffer):
+        return len(buffer)
 
 
 class ProtocolErrorTest(unittest.TestCase):

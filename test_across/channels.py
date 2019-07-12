@@ -55,11 +55,11 @@ class BasicSocketChannel(Channel):
     def __init__(self, sock):
         self.sock = sock
 
-    def send(self, data):
-        return self.sock.send(data)
+    def send(self, buffer):
+        return self.sock.send(buffer)
 
-    def recv(self, size):
-        return self.sock.recv(size)
+    def recv_into(self, buffer):
+        return self.sock.recv_into(buffer)
 
     def close(self):
         return self.sock.close()
@@ -71,15 +71,14 @@ def sendall(obj, data):
 
 
 def recvall(obj, size):
-    data = b''
+    data = bytearray(size)
     while size:
-        ret = obj.recv(size)
-        if not ret:
-            return data
-        size -= len(ret)
-        data += ret
+        ret = obj.recv_into(memoryview(data)[len(data) - size:])
+        if ret == 0:
+            break
+        size -= ret
 
-    return data
+    return bytes(data)
 
 
 class ChannelTest(unittest.TestCase):
@@ -124,7 +123,7 @@ class ChannelTest(unittest.TestCase):
         chan, rchan = self.connect_pair()
 
         def close_rchan():
-            rchan.recv(1)  # recv EOF
+            rchan.recv_into(bytearray(1))  # recv EOF
             rchan.close()
 
         par(chan.close, close_rchan)
@@ -132,14 +131,14 @@ class ChannelTest(unittest.TestCase):
     def test_singlebyte_send(self):
         chan, rchan = self.connect_pair()
         self.assertEqual(chan.send(b'x'), 1)
-        self.assertEqual(rchan.recv(1), b'x')
+        self.assertEqual(recvall(rchan, 1), b'x')
         rchan.close()
         chan.close()
 
     def test_singlebyte_recv(self):
         chan, rchan = self.connect_pair()
         rchan.send(b'x')
-        self.assertEqual(chan.recv(1), b'x')
+        self.assertEqual(recvall(chan, 1), b'x')
         rchan.close()
         chan.close()
 
@@ -187,7 +186,7 @@ class ChannelTest(unittest.TestCase):
 
         def recv():
             try:
-                chan.recv(1)
+                chan.recv_into(bytearray(1))
             except Exception as exc:
                 self.verify_exception(exc)
 
@@ -234,7 +233,7 @@ class ChannelTest(unittest.TestCase):
         chan, rchan = self.connect_pair()
         chan.set_timeout(0.01)
         try:
-            chan.recv(1)
+            chan.recv_into(bytearray(1))
         except Exception as exc:
             self.verify_exception(exc)
         else:
@@ -311,7 +310,7 @@ class ResolverTest(unittest.TestCase):
             chan.connect()
             chan.send(b'a')
             rchan = server2.accept()
-            self.assertEqual(rchan.recv(1), b'a')
+            self.assertEqual(recvall(rchan, 1), b'a')
             chan.close()
             rchan.close()
 

@@ -17,10 +17,10 @@ class Channel:
     def connect(self):
         pass
 
-    def recv(self, size):
+    def recv_into(self, buffer):
         raise NotImplementedError
 
-    def send(self, data):
+    def send(self, buffer):
         raise NotImplementedError
 
     def cancel(self):
@@ -165,13 +165,13 @@ if _windows:
             self.__out_pipe = out_pipe
             self.__close = close
 
-        def recv(self, size):
-            return self.__in_pipe.read(size)
+        def recv_into(self, buffer):
+            return self.__in_pipe.readinto(buffer)
 
-        def send(self, data):
-            self.__out_pipe.write(data)
+        def send(self, buffer):
+            self.__out_pipe.write(buffer)
             self.__out_pipe.flush()
-            return len(data)
+            return len(buffer)
 
         def close(self):
             if self.__close:
@@ -194,18 +194,18 @@ else:
         def set_timeout(self, timeout):
             self.__poller.set_timeout(timeout)
 
-        def recv(self, size):
-            data = self.__in_pipe.read(size)
-            if data is not None:
-                return data
+        def recv_into(self, buffer):
+            nbytes = self.__in_pipe.readinto(buffer)
+            if nbytes is not None:
+                return nbytes
             self.__poller.wait_recv()
-            data = self.__in_pipe.read(size)
-            assert data is not None
-            return data
+            nbytes = self.__in_pipe.readinto(buffer)
+            assert nbytes is not None
+            return nbytes
 
-        def send(self, data):
+        def send(self, buffer):
             self.__poller.wait_send()
-            return os.write(self.__out_fd, data)
+            return os.write(self.__out_fd, buffer)
 
         def cancel(self):
             self.__poller.cancel()
@@ -337,13 +337,13 @@ class SocketChannel(Channel):
                 self.__sock.close()
             raise
 
-    def send(self, data):
+    def send(self, buffer):
         self.__poller.wait_send()
-        return self.__sock.send(data)
+        return self.__sock.send(buffer)
 
-    def recv(self, size):
+    def recv_into(self, buffer):
         self.__poller.wait_recv()
-        return self.__sock.recv(size)
+        return self.__sock.recv_into(buffer)
 
     def cancel(self):
         self.__poller.cancel()

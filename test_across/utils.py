@@ -19,21 +19,23 @@ class _MemoryPipe:
         self.__lock = threading.Lock()
         self.__send_condition = threading.Condition(self.__lock)
         self.__recv_condition = threading.Condition(self.__lock)
-        self.__send_data, self.__send_size = None, None
-        self.__recv_data, self.__recv_size = None, None
+        self.__send_buffer, self.__send_size = None, None
+        self.__recv_buffer, self.__recv_size = None, None
         self.__closed = False
 
-    def send(self, data):
+    def send(self, buffer):
         with self.__lock:
-            if self.__send_data is not None or self.__send_size is not None:
+            if self.__send_buffer is not None or self.__send_size is not None:
                 raise AssertionError('send already in progress')
             if self.__closed:
                 raise ValueError
-            if self.__recv_size is not None:
-                self.__recv_data, self.__recv_size = data[:self.__recv_size], None
+            if self.__recv_buffer is not None:
+                size = min(len(buffer), len(self.__recv_buffer))
+                self.__recv_buffer[:size] = buffer[:size]
+                self.__recv_buffer, self.__recv_size = None, size
                 self.__recv_condition.notify()
-                return len(self.__recv_data)
-            self.__send_data = data
+                return size
+            self.__send_buffer = buffer
             while self.__send_size is None and not self.__closed:
                 self.__send_condition.wait()
             if self.__send_size is None:
@@ -41,29 +43,30 @@ class _MemoryPipe:
             size, self.__send_size = self.__send_size, None
             return size
 
-    def recv(self, size):
+    def recv_into(self, buffer):
         with self.__lock:
-            if self.__recv_data is not None or self.__recv_size is not None:
+            if self.__recv_buffer is not None or self.__recv_size is not None:
                 raise AssertionError('recv already in progress')
             if self.__closed:
                 raise ValueError
-            if self.__send_data is not None:
-                data = self.__send_data[:size]
-                self.__send_data, self.__send_size = None, len(data)
+            if self.__send_buffer is not None:
+                size = min(len(buffer), len(self.__send_buffer))
+                buffer[:size] = self.__send_buffer[:size]
+                self.__send_buffer, self.__send_size = None, size
                 self.__send_condition.notify()
-                return data
-            self.__recv_size = size
-            while self.__recv_data is None and not self.__closed:
+                return size
+            self.__recv_buffer = buffer
+            while self.__recv_size is None and not self.__closed:
                 self.__recv_condition.wait()
-            if self.__recv_data is None:
+            if self.__recv_size is None:
                 raise ValueError
-            data, self.__recv_data = self.__recv_data, None
-            return data
+            size, self.__recv_size = self.__recv_size, None
+            return size
 
     def close(self):
         with self.__lock:
             self.__closed = True
-            self.__send_data, self.__recv_size = None, None
+            self.__send_buffer, self.__recv_buffer = None, None
             self.__send_condition.notify()
             self.__recv_condition.notify()
 
@@ -73,11 +76,11 @@ class _MemoryPipeChannel(across.channels.Channel):
         self.__stdin = stdin
         self.__stdout = stdout
 
-    def recv(self, size):
-        return self.__stdin.recv(size)
+    def recv_into(self, buffer):
+        return self.__stdin.recv_into(buffer)
 
-    def send(self, data):
-        return self.__stdout.send(data)
+    def send(self, buffer):
+        return self.__stdout.send(buffer)
 
     def cancel(self):
         self.__stdin.close()

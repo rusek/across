@@ -13,11 +13,11 @@ from .utils import MemoryChannel
 
 
 class EOFChannel(across.channels.Channel):
-    def send(self, data):
+    def send(self, buffer):
         raise IOError(errno.EPIPE)
 
-    def recv(self, size):
-        return b''
+    def recv_into(self, buffer):
+        return 0
 
 
 class TimeoutableQueue:
@@ -70,12 +70,12 @@ class ByteCountingMemoryChannel(MemoryChannel):
             while self.__num_recv_bytes == old_value:
                 self.__condition.wait()
 
-    def recv(self, size):
-        data = super().recv(size)
+    def recv_into(self, buffer):
+        nbytes = super().recv_into(buffer)
         with self.__lock:
-            self.__num_recv_bytes += len(data)
+            self.__num_recv_bytes += nbytes
             self.__condition.notify_all()
-        return data
+        return nbytes
 
 
 def nop():

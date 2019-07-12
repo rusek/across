@@ -12,10 +12,10 @@ class UnconnectableChannel(Channel):
     def connect(self):
         raise ConnectError
 
-    def send(self, data):
+    def send(self, buffer):
         raise AssertionError
 
-    def recv(self, size):
+    def recv_into(self, buffer):
         raise AssertionError
 
 
