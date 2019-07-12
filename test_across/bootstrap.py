@@ -225,6 +225,8 @@ with boot_connection(__name__) as conn:
         conn.call(func)
         raise AssertionError('Exception not raised')
     except OperationError as err:
+        err = err.__context__
+        if not isinstance(err, ImportError): raise
         if '__main__ module cannot be safely imported remotely' not in str(err): raise
 """)
         subprocess.check_call([sys.executable, path])

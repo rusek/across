@@ -555,7 +555,7 @@ class Connection:
             except Exception as error:
                 for proxy_id in proxy_ids:
                     del self.__objs[proxy_id]
-                raise OperationError('Pickling failed: {}'.format(error))
+                raise OperationError('Pickling failed due to {}'.format(_format_exception_only(error)))
 
     def __deserialize(self, msg):
         proxy_ids = []
@@ -571,7 +571,7 @@ class Connection:
                     for proxy_id in leaked_proxy_ids:
                         msg.put_uint(proxy_id)
                     self.__sender.send_frame(msg.as_bytes())
-                raise OperationError('Unpickling failed: {}'.format(error))
+                raise OperationError('Unpickling failed failed due to {}'.format(_format_exception_only(error)))
 
     def __receiver_loop(self):
         try:
@@ -694,10 +694,16 @@ class Connection:
                     msg.put_uint(actor_id ^ 1)
                     self.__serialize(msg, result)
         except OperationError as error:
-            msg = _Message()
-            msg.put_uint(_OPERATION_ERROR)
-            msg.put_uint(actor_id ^ 1)
-            msg.put_bytes(str(error).encode('utf-8', errors='replace'))
+            try:
+                msg = _Message()
+                msg.put_uint(_ERROR)
+                msg.put_uint(actor_id ^ 1)
+                self.__serialize(msg, _dump_exception(error))
+            except OperationError:
+                msg = _Message()
+                msg.put_uint(_OPERATION_ERROR)
+                msg.put_uint(actor_id ^ 1)
+                msg.put_bytes(str(error).encode('utf-8', errors='replace'))
 
         self.__sender.send_frame(msg.as_bytes())
         return None
@@ -906,6 +912,12 @@ def _load_traceback(packed_tb):
             if line:
                 buf.append('    {}\n'.format(line.strip()))
     return _generate_traceback_object(''.join(buf), packed_tb)
+
+
+def _format_exception_only(error):
+    if isinstance(error, SyntaxError):
+        return 'SyntaxError: {}'.format(error)
+    return ''.join(traceback.format_exception_only(type(error), error)).strip()
 
 
 # Synchronized queue implementation that can be safely used from within __del__ methods, as opposed to
