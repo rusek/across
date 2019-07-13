@@ -80,17 +80,30 @@ class SingleThreadedTest(unittest.TestCase):
                 conn.call(Box(func))
 
 
+class PicklingTestError(Exception):  # test error raised during pickling/unpickling
+    pass
+
+
 class BrokenPickle(object):
     def __reduce__(self):
-        raise TypeError('{} is not pickleable'.format(self.__class__.__name__))
+        raise PicklingTestError('{} is not pickleable'.format(self.__class__.__name__))
 
 
 class BrokenPickleError(BrokenPickle, Exception):
     pass
 
 
+class RecursivelyBrokenPickle(Exception):
+    def __reduce__(self):
+        raise RecursivelyBrokenPickleError
+
+
+class RecursivelyBrokenPickleError(RecursivelyBrokenPickle, Exception):
+    pass
+
+
 def _reduce_broken_unpickle(cls):
-    raise TypeError('{} is not unpickleable'.format(cls.__name__))
+    raise PicklingTestError('{} is not unpickleable'.format(cls.__name__))
 
 
 class BrokenUnpickle(object):
@@ -111,13 +124,24 @@ class PicklingExceptionTest(unittest.TestCase):
 
     def test_pickle_error_in_call_argument(self):
         with make_connection() as conn:
-            with self.assertRaises(across.OperationError):
+            with self.assertRaises(across.OperationError) as context:
                 conn.call(get_args, BrokenPickle())
+            self.assertIsInstance(context.exception.__cause__, PicklingTestError)
             self.assertEqual(conn.call(get_magic), magic)
 
     def test_pickle_error_in_call_result(self):
         def func():
             return BrokenPickle()
+
+        with make_connection() as conn:
+            with self.assertRaises(across.OperationError) as context:
+                conn.call(Box(func))
+            self.assertIsInstance(context.exception.__cause__, PicklingTestError)
+            self.assertEqual(conn.call(get_magic), magic)
+
+    def test_recursive_pickle_error_in_call_result(self):
+        def func():
+            return RecursivelyBrokenPickle()
 
         with make_connection() as conn:
             with self.assertRaises(across.OperationError):
@@ -129,14 +153,16 @@ class PicklingExceptionTest(unittest.TestCase):
             raise BrokenPickleError()
 
         with make_connection() as conn:
-            with self.assertRaises(across.OperationError):
+            with self.assertRaises(across.OperationError) as context:
                 conn.call(Box(func))
+            self.assertIsInstance(context.exception.__cause__, PicklingTestError)
             self.assertEqual(conn.call(get_magic), magic)
 
     def test_unpickle_error_in_call(self):
         with make_connection() as conn:
-            with self.assertRaises(across.OperationError):
+            with self.assertRaises(across.OperationError) as context:
                 conn.call(BrokenUnpickle())
+            self.assertIsInstance(context.exception.__cause__, PicklingTestError)
             self.assertEqual(conn.call(get_magic), magic)
 
     def test_unpickle_error_in_call_result(self):
@@ -144,8 +170,9 @@ class PicklingExceptionTest(unittest.TestCase):
             return BrokenUnpickle()
 
         with make_connection() as conn:
-            with self.assertRaises(across.OperationError):
+            with self.assertRaises(across.OperationError) as context:
                 conn.call(Box(func))
+            self.assertIsInstance(context.exception.__cause__, PicklingTestError)
             self.assertEqual(conn.call(get_magic), magic)
 
     def test_unpickle_error_in_call_error(self):
@@ -153,8 +180,9 @@ class PicklingExceptionTest(unittest.TestCase):
             raise BrokenUnpickleError()
 
         with make_connection() as conn:
-            with self.assertRaises(across.OperationError):
+            with self.assertRaises(across.OperationError) as context:
                 conn.call(Box(func))
+            self.assertIsInstance(context.exception.__cause__, PicklingTestError)
             self.assertEqual(conn.call(get_magic), magic)
 
     def test_shutdown(self):

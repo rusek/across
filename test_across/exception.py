@@ -32,12 +32,16 @@ def tb_to_list(tb):
 
 
 class ExceptionTest(unittest.TestCase):
-    def _capture_exc(self, func, *args):
+    # self.assertRaises may modify exception object (e.g. clear traceback)
+    def _capture_exc_type(self, exc_type, func, *args):
         try:
             func(*args)
-        except TestError as exc:
+        except exc_type as exc:
             return exc
-        self.fail('TestError not raised')
+        self.fail('{} not raised'.format(exc_type))
+
+    def _capture_exc(self, func, *args):
+        return self._capture_exc_type(TestError, func, *args)
 
     def _capture_excs(self, func):
         ref_exc = self._capture_exc(func)  # reference exception
@@ -50,8 +54,8 @@ class ExceptionTest(unittest.TestCase):
             raise across.DisconnectError
 
         with make_connection() as conn:
-            with self.assertRaises(RuntimeError):
-                conn.call(Box(func))
+            exc = self._capture_exc_type(RuntimeError, conn.call, Box(func))
+            self.assertIsInstance(exc.__cause__, across.DisconnectError)
 
     def test_context(self):
         def func():

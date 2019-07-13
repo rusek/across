@@ -543,10 +543,12 @@ class Connection:
         else:
             raise value
 
-    def __serialize(self, msg, obj):
+    def __serialize(self, msg, obj, as_exc=False):
         proxy_ids = []
         with _ConnScope(self, proxy_ids=proxy_ids):
             try:
+                if as_exc:
+                    obj = _dump_exception(obj)
                 # Use pickle protocol added in Python 3.4.
                 msg.put_bytes(pickle.dumps(obj, protocol=4))
                 msg.put_uint(len(proxy_ids))
@@ -555,13 +557,17 @@ class Connection:
             except Exception as error:
                 for proxy_id in proxy_ids:
                     del self.__objs[proxy_id]
-                raise OperationError('Pickling failed due to {}'.format(_format_exception_only(error)))
+                raise OperationError('Pickling failed due to {}'.format(
+                    _format_exception_only(error))) from error
 
-    def __deserialize(self, msg):
+    def __deserialize(self, msg, as_exc=False):
         proxy_ids = []
         with _ConnScope(self, proxy_ids=proxy_ids):
             try:
-                return pickle.loads(msg.get_bytes())
+                obj = pickle.loads(msg.get_bytes())
+                if as_exc:
+                    obj = _load_exception(obj)
+                return obj
             except Exception as error:
                 leaked_proxy_ids = set(msg.get_uint() for _ in range(msg.get_uint())) - set(proxy_ids)
                 if leaked_proxy_ids:
@@ -571,7 +577,8 @@ class Connection:
                     for proxy_id in leaked_proxy_ids:
                         msg.put_uint(proxy_id)
                     self.__sender.send_frame(msg.as_bytes())
-                raise OperationError('Unpickling failed failed due to {}'.format(_format_exception_only(error)))
+                raise OperationError('Unpickling failed failed due to {}'.format(
+                    _format_exception_only(error))) from error
 
     def __receiver_loop(self):
         try:
@@ -669,36 +676,41 @@ class Connection:
         actor.submit(self.__process_apply, msg, actor_id)
 
     def __process_apply(self, msg, actor_id):
-        # TODO unhandled exceptions should cancel connection
         try:
+            # Deserialize
             obj = self.__deserialize(msg)
+
+            # Execute
             with _ConnScope(self):
                 try:
                     func, args, kwargs = obj
                     try:
-                        result = func(*args, **kwargs)
+                        value = func(*args, **kwargs)
+                        msg_type = _RESULT
                     # If we allow raising OperationError between processes, then the other side wouldn't be able to
                     # determine whether the call failed to execute, or ended up generating OperationError. This
                     # is especially problematic for DisconnectError, which indicates that the connection is
                     # no longer usable.
                     except OperationError as error:
-                        raise RuntimeError('Cannot raise {} between processes'.format(error.__class__.__name__))
+                        raise RuntimeError('Cannot raise {} between processes'.format(
+                            error.__class__.__name__)) from error
                 except Exception as error:
-                    msg = _Message()
-                    msg.put_uint(_ERROR)
-                    msg.put_uint(actor_id ^ 1)
-                    self.__serialize(msg, _dump_exception(error))
-                else:
-                    msg = _Message()
-                    msg.put_uint(_RESULT)
-                    msg.put_uint(actor_id ^ 1)
-                    self.__serialize(msg, result)
+                    value = error
+                    msg_type = _ERROR
+
+            # Serialize
+            msg = _Message()
+            msg.put_uint(msg_type)
+            msg.put_uint(actor_id ^ 1)
+            self.__serialize(msg, value, as_exc=msg_type == _ERROR)
         except OperationError as error:
+            # Handle serialization errors. First, try to serialize the whole error. If that fails, give up using
+            # pickle and send only the message.
             try:
                 msg = _Message()
                 msg.put_uint(_ERROR)
                 msg.put_uint(actor_id ^ 1)
-                self.__serialize(msg, _dump_exception(error))
+                self.__serialize(msg, error, as_exc=True)
             except OperationError:
                 msg = _Message()
                 msg.put_uint(_OPERATION_ERROR)
@@ -730,7 +742,7 @@ class Connection:
 
     def __process_error(self, msg):
         try:
-            return False, _load_exception(self.__deserialize(msg))
+            return False, self.__deserialize(msg, as_exc=True)
         except OperationError as error:
             return False, error
 
@@ -827,8 +839,8 @@ def _execute(source, scope):
 
 
 def _load_exception(obj):
-    if obj is None:
-        return None
+    if not isinstance(obj, tuple):  # None or bare exception
+        return obj
     exc = obj[0]
     exc.__context__ = _load_exception(obj[1])
     exc.__cause__ = _load_exception(obj[3])
@@ -837,14 +849,20 @@ def _load_exception(obj):
     return exc
 
 
-def _dump_exception(exc):
+def _dump_exception(exc, memo=None):
     if exc is None:
         return None
+    if memo is None:
+        memo = set()
+    # It can happen that __context__ and __cause__ are the same, better not dump same exception multiple times.
+    if id(exc) in memo:
+        return exc
+    memo.add(id(exc))
     return (
         exc,
-        _dump_exception(exc.__context__),
+        _dump_exception(exc.__context__, memo),
         exc.__suppress_context__,
-        _dump_exception(exc.__cause__),
+        _dump_exception(exc.__cause__, memo),
         _dump_traceback(exc.__traceback__),
     )
 
