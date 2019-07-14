@@ -24,7 +24,7 @@ class _RemoteSideFilter(logging.Filter):
     def filter(self, record):
         try:
             conn = across.get_connection()
-        except RuntimeError:
+        except ValueError:
             conn = None
         return (conn == _remote_conn.value) != self._negate
 

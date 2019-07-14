@@ -1003,5 +1003,5 @@ def _make_proxy(proxy_id, methods):
 def get_connection():
     conn = _conn_tls.conn
     if conn is None:
-        raise RuntimeError
+        raise ValueError('Current thread is not associated with any connection')
     return conn

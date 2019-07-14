@@ -31,10 +31,10 @@ class GetConnectionTest(unittest.TestCase):
             def on_pickle():
                 self.assertIs(across.get_connection(), conn)
 
-            with self.assertRaises(RuntimeError):
+            with self.assertRaises(ValueError):
                 across.get_connection()
             conn.call(nop, PickleObserver(on_pickle=on_pickle))
-            with self.assertRaises(RuntimeError):
+            with self.assertRaises(ValueError):
                 across.get_connection()
 
     def test_get_connection_during_call_unpickling(self):
@@ -44,10 +44,10 @@ class GetConnectionTest(unittest.TestCase):
                 self.assertIsInstance(remote_conn, across.Connection)
                 self.assertIsNot(remote_conn, conn)
 
-            with self.assertRaises(RuntimeError):
+            with self.assertRaises(ValueError):
                 across.get_connection()
             conn.call(nop, PickleObserver(on_unpickle=on_unpickle))
-            with self.assertRaises(RuntimeError):
+            with self.assertRaises(ValueError):
                 across.get_connection()
 
     def test_get_connection_during_result_pickling(self):
@@ -61,10 +61,10 @@ class GetConnectionTest(unittest.TestCase):
             return PickleObserver(on_pickle=on_pickle)
 
         with make_connection() as conn:
-            with self.assertRaises(RuntimeError):
+            with self.assertRaises(ValueError):
                 across.get_connection()
             conn.call(Box(func))
-            with self.assertRaises(RuntimeError):
+            with self.assertRaises(ValueError):
                 across.get_connection()
 
     def test_get_connection_during_result_unpickling(self):
@@ -72,10 +72,10 @@ class GetConnectionTest(unittest.TestCase):
             def on_unpickle():
                 self.assertIs(across.get_connection(), conn)
 
-            with self.assertRaises(RuntimeError):
+            with self.assertRaises(ValueError):
                 across.get_connection()
             conn.call(Box(lambda: PickleObserver(on_unpickle=on_unpickle)))
-            with self.assertRaises(RuntimeError):
+            with self.assertRaises(ValueError):
                 across.get_connection()
 
     def test_get_connection_during_error_pickling(self):
@@ -89,11 +89,11 @@ class GetConnectionTest(unittest.TestCase):
             raise ArithmeticError(PickleObserver(on_pickle=on_pickle))
 
         with make_connection() as conn:
-            with self.assertRaises(RuntimeError):
+            with self.assertRaises(ValueError):
                 across.get_connection()
             with self.assertRaises(ArithmeticError):
                 conn.call(Box(func))
-            with self.assertRaises(RuntimeError):
+            with self.assertRaises(ValueError):
                 across.get_connection()
 
     def test_get_connection_during_error_unpickling(self):
@@ -104,11 +104,11 @@ class GetConnectionTest(unittest.TestCase):
             def func():
                 raise ArithmeticError(PickleObserver(on_unpickle=on_unpickle))
 
-            with self.assertRaises(RuntimeError):
+            with self.assertRaises(ValueError):
                 across.get_connection()
             with self.assertRaises(ArithmeticError):
                 conn.call(Box(func))
-            with self.assertRaises(RuntimeError):
+            with self.assertRaises(ValueError):
                 across.get_connection()
 
     def test_get_connection_during_invocation(self):
@@ -118,10 +118,10 @@ class GetConnectionTest(unittest.TestCase):
                 self.assertIsInstance(remote_conn, across.Connection)
                 self.assertIsNot(remote_conn, conn)
 
-            with self.assertRaises(RuntimeError):
+            with self.assertRaises(ValueError):
                 across.get_connection()
             conn.call(Box(invoke))
-            with self.assertRaises(RuntimeError):
+            with self.assertRaises(ValueError):
                 across.get_connection()
 
     def test_get_connection_during_nested_invocation(self):
@@ -136,8 +136,8 @@ class GetConnectionTest(unittest.TestCase):
             def invoke_nested():
                 self.assertIs(across.get_connection(), conn)
 
-            with self.assertRaises(RuntimeError):
+            with self.assertRaises(ValueError):
                 across.get_connection()
             conn.call(Box(invoke))
-            with self.assertRaises(RuntimeError):
+            with self.assertRaises(ValueError):
                 across.get_connection()
