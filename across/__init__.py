@@ -467,7 +467,7 @@ class Connection:
             else:
                 self.__sender.stop()
             for future in self.__calls.values():
-                future.set_result(None)
+                future.set_exception(self.__make_disconnect_error_locked())
             self.__calls.clear()
 
     def call(_self, _func, *args, **kwargs):
@@ -477,7 +477,7 @@ class Connection:
             while _self.__state == _STARTING:
                 _self.__state_condition.wait()
             if _self.__state != _RUNNING:
-                raise DisconnectError
+                raise _self.__make_disconnect_error_locked()
             call_id = _self.__next_call_id
             _self.__next_call_id += 1
             _self.__calls[call_id] = future
@@ -496,8 +496,6 @@ class Connection:
         _self.__sender.send_frame(msg.as_bytes())
 
         msg = future.result()
-        if msg is None:
-            raise DisconnectError
         result = msg.get_uint()
         if result == _RESULT_SUCCESS:
             return _self.__deserialize(msg)
@@ -505,6 +503,15 @@ class Connection:
             raise _self.__deserialize(msg, as_exc=True)
         else:  # _RESULT_OPERATION_ERROR
             raise OperationError(msg.get_bytes().decode('utf-8', errors='replace'))
+
+    def __make_disconnect_error_locked(self):
+        if self.__state == _CLOSED:
+            return DisconnectError('Connection is closed')
+        elif self.__cancel_error is None:
+            return DisconnectError('Connection was remotely closed')
+        else:
+            return DisconnectError('Connection was aborted due to {}'.format(
+                format_exception_only(self.__cancel_error)))
 
     def __serialize(self, msg, obj, as_exc=False):
         proxy_ids = []

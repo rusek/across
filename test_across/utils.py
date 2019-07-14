@@ -75,7 +75,7 @@ class _MemoryPipe:
             self.__recv_condition.notify()
 
 
-class _MemoryPipeChannel(across.channels.Channel):
+class _MemoryChannel(across.channels.Channel):
     def __init__(self, stdin, stdout):
         self.__stdin = stdin
         self.__stdout = stdout
@@ -93,21 +93,22 @@ class _MemoryPipeChannel(across.channels.Channel):
 
 def make_channel_pair():
     pipe1, pipe2 = _MemoryPipe(), _MemoryPipe()
-    return _MemoryPipeChannel(pipe1, pipe2), _MemoryPipeChannel(pipe2, pipe1)
+    return _MemoryChannel(pipe1, pipe2), _MemoryChannel(pipe2, pipe1)
 
 
-class MemoryChannel(_MemoryPipeChannel):
+# Channel with bundled remote connection.
+class ConnectionChannel(_MemoryChannel):
     def __init__(self):
         pipe1, pipe2 = _MemoryPipe(), _MemoryPipe()
         super().__init__(pipe1, pipe2)
-        self.__conn = across.Connection(_MemoryPipeChannel(pipe2, pipe1))
+        self.__conn = across.Connection(_MemoryChannel(pipe2, pipe1))
 
     def close(self):
         self.__conn.close()
 
 
 def make_connection():
-    return across.Connection(MemoryChannel())
+    return across.Connection(ConnectionChannel())
 
 
 _box_counter = 0

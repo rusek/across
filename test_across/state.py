@@ -4,7 +4,7 @@ from concurrent.futures import Future
 import across
 from across.channels import Channel
 
-from .utils import make_connection, make_channel_pair, MemoryChannel, Box, call_process
+from .utils import make_connection, make_channel_pair, ConnectionChannel, Box, call_process
 
 
 class StateTest(unittest.TestCase):
@@ -60,7 +60,7 @@ class ContextManagerTest(unittest.TestCase):
             conn.__enter__()
 
     def test_exit_after_disconnect(self):
-        chan = MemoryChannel()
+        chan = ConnectionChannel()
         with self.assertRaises(ValueError):
             with across.Connection(chan) as conn:
                 conn.call(Box(chan.cancel))
@@ -111,16 +111,16 @@ class DisconnectErrorTest(unittest.TestCase):
     def test_call_after_close(self):
         conn = make_connection()
         conn.close()
-        with self.assertRaises(across.DisconnectError):
+        with self.assertRaisesRegex(across.DisconnectError, 'Connection is closed'):
             conn.call(nop)
 
-    def test_disconnect_during_call(self):
-        channel = MemoryChannel()
-        conn = across.Connection(channel)
+    def test_communication_error_during_call(self):
+        chan = ConnectionChannel()
+        conn = across.Connection(chan)
         try:
-            with self.assertRaises(across.DisconnectError):
-                conn.call(Box(channel.cancel))
-            with self.assertRaises(across.DisconnectError):
+            with self.assertRaisesRegex(across.DisconnectError, 'Connection was aborted due to .*'):
+                conn.call(Box(chan.cancel))  # simulate communication error with channel.cancel
+            with self.assertRaisesRegex(across.DisconnectError, 'Connection was aborted due to .*'):
                 conn.call(nop)
         finally:
             try:
@@ -128,10 +128,18 @@ class DisconnectErrorTest(unittest.TestCase):
             except Exception:
                 pass
 
+    def test_remote_close_during_call(self):
+        chan, rchan = make_channel_pair()
+        conn = across.Connection(chan)
+        across.Connection(rchan).close()
+        with self.assertRaisesRegex(across.DisconnectError, 'Connection was remotely closed'):
+            conn.call(nop)
+        conn.close()
+
     def test_call_after_cancel(self):
         conn = make_connection()
         conn.cancel()
-        with self.assertRaises(across.DisconnectError):
+        with self.assertRaisesRegex(across.DisconnectError, 'Connection was aborted due to .*'):
             conn.call(nop)
         try:
             conn.close()

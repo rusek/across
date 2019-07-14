@@ -8,7 +8,7 @@ import errno
 import across
 import across.channels
 
-from .utils import MemoryChannel
+from .utils import ConnectionChannel
 
 
 class EOFChannel(across.channels.Channel):
@@ -54,7 +54,7 @@ class TimeoutableQueue:
             self.__condition.notify()
 
 
-class ByteCountingMemoryChannel(MemoryChannel):
+class ByteCountingConnectionChannel(ConnectionChannel):
     def __init__(self):
         super().__init__()
         self.__lock = threading.Lock()
@@ -86,7 +86,7 @@ class TimeoutTest(unittest.TestCase):
     def test_idle_messages(self):
         timeout = 10
         TimeoutableQueue.last = None
-        chan = ByteCountingMemoryChannel()
+        chan = ByteCountingConnectionChannel()
         remote_sender_queue = TimeoutableQueue.last
         with across.Connection(chan, options=across.Options(timeout=timeout)) as conn:
             conn.call(nop)  # ensure handshake is done
@@ -103,7 +103,7 @@ class TimeoutTest(unittest.TestCase):
     def test_no_idle_messages(self):
         timeout = None
         TimeoutableQueue.last = None
-        chan = ByteCountingMemoryChannel()
+        chan = ByteCountingConnectionChannel()
         remote_sender_queue = TimeoutableQueue.last
         with across.Connection(chan, options=across.Options(timeout=timeout)) as conn:
             conn.call(nop)  # ensure handshake is done
@@ -114,14 +114,14 @@ class TimeoutTest(unittest.TestCase):
             10,
             10.0
         ]:
-            with across.Connection(MemoryChannel(), options=across.Options(timeout=timeout)) as conn:
+            with across.Connection(ConnectionChannel(), options=across.Options(timeout=timeout)) as conn:
                 conn.call(nop)
 
     def test_max_timeout(self):
         self.assertLessEqual(across._MAX_TIMEOUT, threading.TIMEOUT_MAX)
 
     def test_large_timeout(self):
-        with across.Connection(MemoryChannel(), options=across.Options(timeout=1.0e100)) as conn:
+        with across.Connection(ConnectionChannel(), options=across.Options(timeout=1.0e100)) as conn:
             conn.call(nop)
 
     def test_invalid_timeout_value(self):

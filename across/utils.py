@@ -9,17 +9,25 @@ import sys
 import queue
 
 
+# Lightweight version of concurrent.futures.Future
 class Future:
     def __init__(self):
         self._done = threading.Event()
         self._result = None
+        self._exc = None
 
     def result(self):
         self._done.wait()
+        if self._exc is not None:
+            raise self._exc
         return self._result
 
     def set_result(self, result):
         self._result = result
+        self._done.set()
+
+    def set_exception(self, exc):
+        self._exc = exc
         self._done.set()
 
 
