@@ -1,3 +1,7 @@
+"""
+Test helpers.
+"""
+
 import threading
 import io
 import subprocess

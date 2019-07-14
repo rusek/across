@@ -147,31 +147,10 @@ class ProtocolErrorTest(unittest.TestCase):
         with self.assertRaisesRegex(across.ProtocolError, 'Incomplete frame'):
             self.__simulate_error(data=struct.pack('>I', 10) + b'abc')
 
-    def test_invalid_apply_actor(self):
-        with self.assertRaisesRegex(across.ProtocolError, 'Actor not found: 404'):
-            msg = across._Message()
-            msg.put_uint(across._APPLY)
-            msg.put_uint(404)
-            self.__simulate_error(msg=msg)
-
-    def test_invalid_result_actor(self):
-        with self.assertRaisesRegex(across.ProtocolError, 'Actor not found: 404'):
+    def test_invalid_result_call_id(self):
+        with self.assertRaisesRegex(across.ProtocolError, 'Call not found: 404'):
             msg = across._Message()
             msg.put_uint(across._RESULT)
-            msg.put_uint(404)
-            self.__simulate_error(msg=msg)
-
-    def test_invalid_error_actor(self):
-        with self.assertRaisesRegex(across.ProtocolError, 'Actor not found: 404'):
-            msg = across._Message()
-            msg.put_uint(across._ERROR)
-            msg.put_uint(404)
-            self.__simulate_error(msg=msg)
-
-    def test_invalid_operation_error_actor(self):
-        with self.assertRaisesRegex(across.ProtocolError, 'Actor not found: 404'):
-            msg = across._Message()
-            msg.put_uint(across._OPERATION_ERROR)
             msg.put_uint(404)
             self.__simulate_error(msg=msg)
 

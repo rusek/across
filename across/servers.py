@@ -4,6 +4,7 @@ import subprocess
 import sys
 import os.path
 
+from .utils import ignore_exception_at
 import across.channels
 
 
@@ -42,7 +43,7 @@ class LocalConnectionHandler(ConnectionHandler):
         except BaseException:
             # Ignore exceptions after cancelling connections
             if not self.__closing:
-                across._ignore_exception_at(self.__stopped_conn.close)
+                ignore_exception_at(self.__stopped_conn.close)
         self.__stopped_conn = None
 
     def __connection_stopped(self, conn):

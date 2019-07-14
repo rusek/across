@@ -16,6 +16,7 @@ import warnings
 import copy
 import errno
 
+from .utils import ignore_exception_at, Executor, Future
 from .channels import PipeChannel, SocketChannel, ProcessChannel
 
 
@@ -119,55 +120,6 @@ class _ConnTls(threading.local):
 _conn_tls = _ConnTls()
 
 
-class _Actor:
-    def __init__(self, id):
-        self.id = id
-        self.__lock = threading.Lock()
-        self.__condition = threading.Condition(self.__lock)
-        self.__task = None
-        self.__cancelled = False
-
-    def submit(self, func, *args):
-        with self.__lock:
-            # TODO should be a protocol error
-            assert self.__task is None
-            self.__task = func, args
-            self.__condition.notify()
-
-    def cancel(self):
-        with self.__lock:
-            self.__cancelled = True
-            self.__condition.notify()
-
-    def __get_task(self):
-        with self.__lock:
-            while self.__task is None and not self.__cancelled:
-                self.__condition.wait()
-            if self.__cancelled:
-                return None
-            task, self.__task = self.__task, None
-            return task
-
-    def run(self, main=False):
-        for func, args in iter(self.__get_task, None):
-            ret = func(*args)
-            if ret is not None:
-                return ret
-        if not main:
-            raise DisconnectError
-
-
-class _ActorThread(threading.Thread):
-    def __init__(self, actor, tls):
-        super().__init__(daemon=True)
-        self.__actor = actor
-        self.__tls = tls
-
-    def run(self):
-        self.__tls.actor = self.__actor
-        self.__actor.run(main=True)
-
-
 class OperationError(Exception):
     pass
 
@@ -183,11 +135,13 @@ class ProtocolError(Exception):
 _GREETING = 0
 _APPLY = 1
 _RESULT = 2
-_ERROR = 3
-_OPERATION_ERROR = 4
-_GOODBYE = 5
-_DEL_OBJS = 6
-_IDLE = 7
+_GOODBYE = 3
+_DEL_OBJS = 4
+_IDLE = 5
+
+_RESULT_SUCCESS = 2
+_RESULT_ERROR = 3
+_RESULT_OPERATION_ERROR = 4
 
 
 class _ConnScope(object):
@@ -385,10 +339,9 @@ class Connection:
         self.__on_stopped = on_stopped
         self.__sender.send_superblock(_get_superblock())
 
-        self.__actors = {}
-        self.__next_actor_id = 0
-        self.__tls = threading.local()
-        self.__actor_threads = []
+        self.__calls = {}
+        self.__next_call_id = 0
+        self.__executor = Executor()
 
         self.__objs = {}
         self.__obj_counter = 0
@@ -500,7 +453,7 @@ class Connection:
                 try:
                     self.__channel.cancel()
                 except Exception:
-                    _ignore_exception_at(self.__channel)
+                    ignore_exception_at(self.__channel)
 
     def __set_stopping_locked(self):
         if self.__state in (_STARTING, _RUNNING):
@@ -512,36 +465,45 @@ class Connection:
                 self.__sender.send_frame_and_stop(msg.as_bytes())
             else:
                 self.__sender.stop()
-            for actor in self.__actors.values():
-                actor.cancel()
-
-    def __get_current_actor_locked(self):
-        try:
-            return self.__tls.actor
-        except AttributeError:
-            actor_id = self.__next_actor_id
-            self.__next_actor_id += 2
-            actor = self.__actors[actor_id] = self.__tls.actor = _Actor(actor_id)
-            return actor
+            for future in self.__calls.values():
+                future.set_result(None)
+            self.__calls.clear()
 
     def call(_self, _func, *args, **kwargs):
+        future = Future()
+
         with _self.__lock:
             while _self.__state == _STARTING:
                 _self.__state_condition.wait()
             if _self.__state != _RUNNING:
                 raise DisconnectError
-            actor = _self.__get_current_actor_locked()
+            call_id = _self.__next_call_id
+            _self.__next_call_id += 1
+            _self.__calls[call_id] = future
 
-        msg = _Message()
-        msg.put_uint(_APPLY)
-        msg.put_uint(actor.id ^ 1)
-        _self.__serialize(msg, (_func, args, kwargs))
+        try:
+            msg = _Message()
+            msg.put_uint(_APPLY)
+            msg.put_uint(call_id)
+            _self.__serialize(msg, (_func, args, kwargs))
+        except BaseException:
+            with _self.__lock:
+                # May be already deleted if connection entered stopping state
+                _self.__calls.pop(call_id, None)
+            raise
+
         _self.__sender.send_frame(msg.as_bytes())
-        success, value = actor.run()
-        if success:
-            return value
-        else:
-            raise value
+
+        msg = future.result()
+        if msg is None:
+            raise DisconnectError
+        result = msg.get_uint()
+        if result == _RESULT_SUCCESS:
+            return _self.__deserialize(msg)
+        elif result == _RESULT_ERROR:
+            raise _self.__deserialize(msg, as_exc=True)
+        else:  # _RESULT_OPERATION_ERROR
+            raise OperationError(msg.get_bytes().decode('utf-8', errors='replace'))
 
     def __serialize(self, msg, obj, as_exc=False):
         proxy_ids = []
@@ -601,8 +563,7 @@ class Connection:
             except Exception as error:
                 self.__cancel(error)
 
-            for actor_thread in self.__actor_threads:
-                actor_thread.join()
+            self.__executor.close()
 
         with self.__lock:
             self.__state = _STOPPED
@@ -664,18 +625,10 @@ class Connection:
     def __handle_apply_locked(self, msg):
         if self.__state != _RUNNING:
             return
-        actor_id = msg.get_uint()
-        actor = self.__actors.get(actor_id)
-        if actor is None:
-            if not actor_id & 1:
-                raise ProtocolError('Actor not found: {}'.format(actor_id))
-            actor = self.__actors[actor_id] = _Actor(actor_id)
-            actor_thread = _ActorThread(actor, self.__tls)
-            self.__actor_threads.append(actor_thread)
-            actor_thread.start()
-        actor.submit(self.__process_apply, msg, actor_id)
+        self.__executor.submit(self.__process_apply, msg)
 
-    def __process_apply(self, msg, actor_id):
+    def __process_apply(self, msg):
+        call_id = msg.get_uint()
         try:
             # Deserialize
             obj = self.__deserialize(msg)
@@ -686,7 +639,7 @@ class Connection:
                     func, args, kwargs = obj
                     try:
                         value = func(*args, **kwargs)
-                        msg_type = _RESULT
+                        result_type = _RESULT_SUCCESS
                     # If we allow raising OperationError between processes, then the other side wouldn't be able to
                     # determine whether the call failed to execute, or ended up generating OperationError. This
                     # is especially problematic for DisconnectError, which indicates that the connection is
@@ -696,65 +649,38 @@ class Connection:
                             error.__class__.__name__)) from error
                 except Exception as error:
                     value = error
-                    msg_type = _ERROR
+                    result_type = _RESULT_ERROR
 
             # Serialize
             msg = _Message()
-            msg.put_uint(msg_type)
-            msg.put_uint(actor_id ^ 1)
-            self.__serialize(msg, value, as_exc=msg_type == _ERROR)
+            msg.put_uint(_RESULT)
+            msg.put_uint(call_id)
+            msg.put_uint(result_type)
+            self.__serialize(msg, value, as_exc=result_type == _RESULT_ERROR)
         except OperationError as error:
             # Handle serialization errors. First, try to serialize the whole error. If that fails, give up using
             # pickle and send only the message.
             try:
                 msg = _Message()
-                msg.put_uint(_ERROR)
-                msg.put_uint(actor_id ^ 1)
+                msg.put_uint(_RESULT)
+                msg.put_uint(call_id)
+                msg.put_uint(_RESULT_ERROR)
                 self.__serialize(msg, error, as_exc=True)
             except OperationError:
                 msg = _Message()
-                msg.put_uint(_OPERATION_ERROR)
-                msg.put_uint(actor_id ^ 1)
+                msg.put_uint(_RESULT)
+                msg.put_uint(call_id)
+                msg.put_uint(_RESULT_OPERATION_ERROR)
                 msg.put_bytes(str(error).encode('utf-8', errors='replace'))
 
         self.__sender.send_frame(msg.as_bytes())
-        return None
 
     def __handle_result_locked(self, msg):
-        actor_id = msg.get_uint()
-        actor = self.__actors.get(actor_id)
-        if actor is None:
-            raise ProtocolError('Actor not found: {}'.format(actor_id))
-        actor.submit(self.__process_result, msg)
-
-    def __process_result(self, msg):
-        try:
-            return True, self.__deserialize(msg)
-        except OperationError as error:
-            return False, error
-
-    def __handle_error_locked(self, msg):
-        actor_id = msg.get_uint()
-        actor = self.__actors.get(actor_id)
-        if actor is None:
-            raise ProtocolError('Actor not found: {}'.format(actor_id))
-        actor.submit(self.__process_error, msg)
-
-    def __process_error(self, msg):
-        try:
-            return False, self.__deserialize(msg, as_exc=True)
-        except OperationError as error:
-            return False, error
-
-    def __handle_operation_error_locked(self, msg):
-        actor_id = msg.get_uint()
-        actor = self.__actors.get(actor_id)
-        if actor is None:
-            raise ProtocolError('Actor not found: {}'.format(actor_id))
-        actor.submit(self.__process_operation_error, msg)
-
-    def __process_operation_error(self, msg):
-        return False, OperationError(msg.get_bytes().decode('utf-8', errors='replace'))
+        call_id = msg.get_uint()
+        future = self.__calls.pop(call_id, None)
+        if future is None:
+            raise ProtocolError('Call not found: {}'.format(call_id))
+        future.set_result(msg)
 
     def __handle_del_objs_locked(self, msg):
         for _ in range(msg.get_uint()):
@@ -770,8 +696,6 @@ class Connection:
     __ready_handlers_locked = {
         _APPLY: __handle_apply_locked,
         _RESULT: __handle_result_locked,
-        _ERROR: __handle_error_locked,
-        _OPERATION_ERROR: __handle_operation_error_locked,
         _DEL_OBJS: __handle_del_objs_locked,
         _GOODBYE: __handle_goodbye_locked,
         _IDLE: __handle_idle_locked,
@@ -805,22 +729,13 @@ def _export(modules):
     finder.export(modules)
 
 
-# based on PyErr_WriteUnraisable
-def _ignore_exception_at(obj):
-    try:
-        print('Exception ignored in: {!r}'.format(obj), file=sys.stderr)
-        traceback.print_exc()
-    except BaseException:
-        pass
-
-
 def _shutdown():
     while _unclosed_connections:
         conn_close = next(iter(_unclosed_connections)).close
         try:
             conn_close()
         except BaseException:
-            _ignore_exception_at(conn_close)
+            ignore_exception_at(conn_close)
 
 
 atexit.register(_shutdown)

@@ -50,28 +50,6 @@ class SingleThreadedTest(unittest.TestCase):
         with make_connection() as conn:
             self.assertEqual(conn.call(factorial, 5), 120)
 
-    def test_nested_call_reuses_threads(self):
-        remote_thread = Box()
-        local_thread = threading.current_thread()
-        with make_connection() as conn:
-            @Box
-            def call_local_loop(n):
-                self.assertIs(local_thread, threading.current_thread())
-                if n:
-                    conn.call(call_remote_loop, n - 1)
-
-            @Box
-            def call_remote_loop(n):
-                self.assertIs(remote_thread.value, threading.current_thread())
-                across.get_connection().call(call_local_loop, n)
-
-            @Box
-            def call_remote():
-                remote_thread.value = threading.current_thread()
-                across.get_connection().call(call_local_loop, 5)
-
-            conn.call(call_remote)
-
     def test_exception(self):
         def func():
             raise ValueError
