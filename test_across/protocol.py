@@ -49,15 +49,15 @@ class ProtocolErrorTest(unittest.TestCase):
             conn.wait()
 
     def test_incomplete_frame_size(self):
-        with self.assertRaisesRegex(across.ProtocolError, 'Incomplete frame size'):
+        with self.assertRaisesRegex(EOFError, 'Incomplete frame size'):
             self.__simulate_error(data=b'')
-        with self.assertRaisesRegex(across.ProtocolError, 'Incomplete frame size'):
+        with self.assertRaisesRegex(EOFError, 'Incomplete frame size'):
             self.__simulate_error(data=b'\0\0\0')
 
     def test_incomplete_frame(self):
-        with self.assertRaisesRegex(across.ProtocolError, 'Incomplete frame'):
+        with self.assertRaisesRegex(EOFError, 'Incomplete frame'):
             self.__simulate_error(data=struct.pack('>I', 10))
-        with self.assertRaisesRegex(across.ProtocolError, 'Incomplete frame'):
+        with self.assertRaisesRegex(EOFError, 'Incomplete frame'):
             self.__simulate_error(data=struct.pack('>I', 10) + b'abc')
 
     def test_invalid_result_call_id(self):
@@ -68,9 +68,9 @@ class ProtocolErrorTest(unittest.TestCase):
             self.__simulate_error(msg=msg)
 
     def test_incomplete_superblock(self):
-        with self.assertRaisesRegex(across.ProtocolError, 'Incomplete superblock'):
+        with self.assertRaisesRegex(EOFError, 'Incomplete superblock'):
             self.__simulate_error(data=b'', prepend_superblock=False)
-        with self.assertRaisesRegex(across.ProtocolError, 'Incomplete superblock'):
+        with self.assertRaisesRegex(EOFError, 'Incomplete superblock'):
             self.__simulate_error(data=b'\0\0\0', prepend_superblock=False)
 
     def test_invalid_superblock_magic(self):

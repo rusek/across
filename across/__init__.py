@@ -46,17 +46,17 @@ class _Framer:
     def recv_superblock(self, size):
         superblock = self.__recvall(size)
         if superblock is None:
-            raise ProtocolError('Incomplete superblock')
+            raise EOFError('Incomplete superblock')
         return superblock
 
     def recv_frame(self):
         header = self.__recvall(4)
         if header is None:
-            raise ProtocolError('Incomplete frame size')
+            raise EOFError('Incomplete frame size')
         size, = struct.unpack('>I', header)
         frame = self.__recvall(size)
         if frame is None:
-            raise ProtocolError('Incomplete frame')
+            raise EOFError('Incomplete frame')
         return frame
 
     def __recvall(self, size):
