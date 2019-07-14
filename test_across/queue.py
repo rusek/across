@@ -4,10 +4,7 @@ import gc
 import platform
 from queue import Empty
 
-import across
-
-
-SimpleQueue = across._SimpleQueue
+from across.utils import SimpleQueue
 
 
 class Garbage:

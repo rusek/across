@@ -6,6 +6,7 @@ import threading
 import collections
 import traceback
 import sys
+import queue
 
 
 class Future:
@@ -94,3 +95,57 @@ def ignore_exception_at(obj):
         traceback.print_exc()
     except BaseException:
         pass
+
+
+# Variant of traceback.format_exception_only that really formats only the exception. For SyntaxError,
+# traceback.format_exception_only outputs also some additional lines that pretend to be a part of the traceback.
+def format_exception_only(error):
+    if isinstance(error, SyntaxError):
+        return 'SyntaxError: {}'.format(error)
+    return ''.join(traceback.format_exception_only(type(error), error)).strip()
+
+
+# Synchronized queue implementation that can be safely used from within __del__ methods, as opposed to
+# queue.Queue (https://bugs.python.org/issue14976). In Python 3.7, queue.SimpleQueue can be used instead.
+#
+# This class was written with CPython in mind, and may not work correctly with other Python implementations.
+class SimpleQueue:
+    def __init__(self):
+        self.__lock = threading.Lock()
+        self.__waiter = threading.Lock()
+        self.__items = collections.deque()
+
+        # Create bound method objects for later use in get()/put() - creating such objects may trigger GC,
+        # which must not happen inside get()/put(). These methods are all written in C, and are expected not to
+        # allocate GC memory internally (e.g. with PyObject_GC_New).
+        self.__lock_acquire = self.__lock.acquire
+        self.__lock_release = self.__lock.release
+        self.__waiter_acquire = self.__waiter.acquire
+        self.__waiter_release = self.__waiter.release
+        self.__items_popleft = self.__items.popleft
+        self.__items_append = self.__items.append
+
+        self.__waiter_acquire()
+
+    # Wait until a queue becomes non-empty, and retrieve a single element from the queue. This function may be
+    # called only from a single thread at a time.
+    def get(self, timeout=None):
+        if timeout is None:
+            self.__waiter_acquire()
+        elif not self.__waiter_acquire(timeout=timeout):
+            raise queue.Empty
+        self.__lock_acquire()
+        item = self.__items_popleft()
+        if self.__items:
+            self.__waiter_release()
+        self.__lock_release()
+        return item
+
+    # Insert a single element at the end of the queue. This method may be safely called from multiple threads,
+    # and from __del__ methods.
+    def put(self, item):
+        self.__lock_acquire()
+        if not self.__items:
+            self.__waiter_release()
+        self.__items_append(item)
+        self.__lock_release()

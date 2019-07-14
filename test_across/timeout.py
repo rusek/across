@@ -82,7 +82,7 @@ def nop():
 
 
 class TimeoutTest(unittest.TestCase):
-    @unittest.mock.patch('across._SimpleQueue', new=TimeoutableQueue)
+    @unittest.mock.patch('across._SenderQueue', new=TimeoutableQueue)
     def test_idle_messages(self):
         timeout = 10
         TimeoutableQueue.last = None
@@ -99,7 +99,7 @@ class TimeoutTest(unittest.TestCase):
             self.assertLess(last_get_timeout, timeout * 0.75)
             self.assertGreater(last_get_timeout, timeout * 0.1)
 
-    @unittest.mock.patch('across._SimpleQueue', new=TimeoutableQueue)
+    @unittest.mock.patch('across._SenderQueue', new=TimeoutableQueue)
     def test_no_idle_messages(self):
         timeout = None
         TimeoutableQueue.last = None

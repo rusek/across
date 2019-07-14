@@ -1,11 +1,9 @@
 import threading
-import collections
 import struct
 import pickle
 import sys
 import types
 import atexit
-import traceback
 import io
 import queue
 import ast
@@ -16,7 +14,7 @@ import warnings
 import copy
 import errno
 
-from .utils import ignore_exception_at, Executor, Future
+from .utils import ignore_exception_at, Executor, Future, SimpleQueue, format_exception_only
 from .channels import PipeChannel, SocketChannel, ProcessChannel
 
 
@@ -158,12 +156,15 @@ class _ConnScope(object):
         _conn_tls.proxy_ids = self.__proxy_ids
 
 
+_SenderQueue = SimpleQueue  # patched by tests
+
+
 class _SenderThread(threading.Thread):
     def __init__(self, framer, cancel_func):
         super(_SenderThread, self).__init__(daemon=True)
         self.__framer = framer
         self.__cancel_func = cancel_func
-        self.__queue = _SimpleQueue()
+        self.__queue = _SenderQueue()
         self.__idle_timeout = None
 
     def run(self):
@@ -520,7 +521,7 @@ class Connection:
                 for proxy_id in proxy_ids:
                     del self.__objs[proxy_id]
                 raise OperationError('Pickling failed due to {}'.format(
-                    _format_exception_only(error))) from error
+                    format_exception_only(error))) from error
 
     def __deserialize(self, msg, as_exc=False):
         proxy_ids = []
@@ -540,7 +541,7 @@ class Connection:
                         msg.put_uint(proxy_id)
                     self.__sender.send_frame(msg.as_bytes())
                 raise OperationError('Unpickling failed failed due to {}'.format(
-                    _format_exception_only(error))) from error
+                    format_exception_only(error))) from error
 
     def __receiver_loop(self):
         try:
@@ -845,58 +846,6 @@ def _load_traceback(packed_tb):
             if line:
                 buf.append('    {}\n'.format(line.strip()))
     return _generate_traceback_object(''.join(buf), packed_tb)
-
-
-def _format_exception_only(error):
-    if isinstance(error, SyntaxError):
-        return 'SyntaxError: {}'.format(error)
-    return ''.join(traceback.format_exception_only(type(error), error)).strip()
-
-
-# Synchronized queue implementation that can be safely used from within __del__ methods, as opposed to
-# queue.Queue (https://bugs.python.org/issue14976). In Python 3.7, queue.SimpleQueue can be used instead.
-#
-# This class was written with CPython in mind, and may not work correctly with other Python implementations.
-class _SimpleQueue:
-    def __init__(self):
-        self.__lock = threading.Lock()
-        self.__waiter = threading.Lock()
-        self.__items = collections.deque()
-
-        # Create bound method objects for later use in get()/put() - creating such objects may trigger GC,
-        # which must not happen inside get()/put(). These methods are all written in C, and are expected not to
-        # allocate GC memory internally (e.g. with PyObject_GC_New).
-        self.__lock_acquire = self.__lock.acquire
-        self.__lock_release = self.__lock.release
-        self.__waiter_acquire = self.__waiter.acquire
-        self.__waiter_release = self.__waiter.release
-        self.__items_popleft = self.__items.popleft
-        self.__items_append = self.__items.append
-
-        self.__waiter_acquire()
-
-    # Wait until a queue becomes non-empty, and retrieve a single element from the queue. This function may be
-    # called only from a single thread at a time.
-    def get(self, timeout=None):
-        if timeout is None:
-            self.__waiter_acquire()
-        elif not self.__waiter_acquire(timeout=timeout):
-            raise queue.Empty
-        self.__lock_acquire()
-        item = self.__items_popleft()
-        if self.__items:
-            self.__waiter_release()
-        self.__lock_release()
-        return item
-
-    # Insert a single element at the end of the queue. This method may be safely called from multiple threads,
-    # and from __del__ methods.
-    def put(self, item):
-        self.__lock_acquire()
-        if not self.__items:
-            self.__waiter_release()
-        self.__items_append(item)
-        self.__lock_release()
 
 
 class Proxy(object):
