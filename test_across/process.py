@@ -1,9 +1,10 @@
 import unittest
-import across
-import across.channels
 import operator
 import sys
 import subprocess
+
+import across
+import across.channels
 
 from .utils import windows
 

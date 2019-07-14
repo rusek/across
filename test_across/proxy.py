@@ -1,9 +1,11 @@
 import unittest
 import pickle
-import across
 import copy
 import weakref
 import gc
+
+import across
+
 from .utils import make_connection, Box
 
 

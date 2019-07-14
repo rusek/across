@@ -1,8 +1,10 @@
 import unittest
 import logging
-from .utils import make_connection, Box, StderrCollector
+
 from across.logging import AcrossHandler
 import across
+
+from .utils import make_connection, Box, StderrCollector
 
 
 class _ListHandler(logging.Handler):

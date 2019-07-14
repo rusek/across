@@ -1,7 +1,3 @@
-import across
-
-from .utils import par, mktemp, localhost, skip_if_no_unix_sockets
-
 import unittest
 import subprocess
 import sys
@@ -9,6 +5,10 @@ import socket
 import os
 import time
 import signal
+
+import across
+
+from .utils import par, mktemp, localhost, skip_if_no_unix_sockets
 
 
 def spawn_main(args, **popen_extras):

@@ -1,111 +1,24 @@
 import unittest
-import across
-import across.channels
 import struct
 import sys
-from concurrent.futures import Future
-from .utils import make_connection, MemoryChannel, Box
+
+import across
+import across.channels
 
 
-def nop(*args, **kwargs):
-    pass
+class GreetingTest(unittest.TestCase):
+    def test_greeting(self):
+        frame = across._get_greeting_frame(0)
+        self.assertEqual(len(frame), 1 + 3 + 3 + 1)
 
+        msg_type, = struct.unpack_from('>B', frame, 0)
+        self.assertEqual(msg_type, across._GREETING)
 
-class FirstError(Exception):
-    pass
+        python_version = struct.unpack_from('BBB', frame, 1)
+        self.assertEqual(python_version, sys.version_info[:3])
 
-
-class SecondError(Exception):
-    pass
-
-
-class FailingChannel(across.channels.Channel):
-    def __init__(self):
-        self.connect_future = Future()
-        self.send_future = Future()
-        self.recv_future = Future()
-        self.close_future = Future()
-
-    def connect(self):
-        self.connect_future.result()
-
-    def send(self, buffer):
-        self.send_future.result()
-        return len(buffer)
-
-    def recv_into(self, buffer):
-        self.recv_future.result()
-        return 0
-
-    def close(self):
-        self.close_future.result()
-
-
-class DisconnectErrorTest(unittest.TestCase):
-    def test_call_after_close(self):
-        conn = make_connection()
-        conn.close()
-        with self.assertRaises(across.DisconnectError):
-            conn.call(nop)
-
-    def test_disconnect_during_call(self):
-        channel = MemoryChannel()
-        conn = across.Connection(channel)
-        try:
-            with self.assertRaises(across.DisconnectError):
-                conn.call(Box(channel.cancel))
-            with self.assertRaises(across.DisconnectError):
-                conn.call(nop)
-        finally:
-            try:
-                conn.close()
-            except Exception:
-                pass
-
-    def test_call_after_cancel(self):
-        conn = make_connection()
-        conn.cancel()
-        with self.assertRaises(across.DisconnectError):
-            conn.call(nop)
-        try:
-            conn.close()
-        except Exception:
-            pass
-
-    def test_close_after_cancel(self):
-        conn = make_connection()
-        conn.cancel()
-        # TODO maybe close() shouldn't raise exception in this case?
-        with self.assertRaises(OSError):
-            conn.close()
-
-    def test_connect_exception(self):
-        chan = FailingChannel()
-        chan.connect_future.set_exception(FirstError())
-        with self.assertRaises(FirstError):
-            with across.Connection(chan):
-                pass
-
-    def test_recv_exception_is_ignored_after_send_exception(self):
-        chan = FailingChannel()
-        chan.connect_future.set_result(None)
-        chan.close_future.set_result(None)
-        with self.assertRaises(FirstError):
-            conn = across.Connection(chan)
-            chan.send_future.set_exception(FirstError())
-            conn.wait()
-            chan.recv_future.set_exception(SecondError())
-            conn.close()
-
-    def test_channel_close_exception_is_ignored_after_previous_exception(self):
-        chan = FailingChannel()
-        chan.connect_future.set_result(None)
-        chan.send_future.set_result(None)
-        chan.recv_future.set_exception(FirstError())
-        chan.close_future.set_exception(SecondError())
-        with self.assertRaises(FirstError):
-            with across.Connection(chan) as conn:
-                conn.wait()
+        across_version = struct.unpack_from('BBB', frame, 4)
+        self.assertEqual('.'.join(map(str, across_version)), across.__version__)
 
 
 class ProtocolErrorChannel(across.channels.Channel):

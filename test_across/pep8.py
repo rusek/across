@@ -1,10 +1,12 @@
 import unittest
-import across
 import os.path
+
 try:
     import pycodestyle
 except ImportError:
     pycodestyle = None
+
+import across
 
 
 class Pep8Test(unittest.TestCase):

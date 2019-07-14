@@ -1,13 +1,15 @@
 import unittest
-import across
-import across.channels
 import sys
 import traceback
 import types
 import importlib.util
 import os.path
 import subprocess
+
+import across
+import across.channels
 from across._importer import _compile_safe_main as compile_safe_main
+
 from .utils import mktemp, make_connection
 
 
@@ -130,7 +132,7 @@ class BootstrapTest(unittest.TestCase):
     def test_filenames_are_not_repeatedly_mangled(self):
         path = mktemp()
         source = """
-from test_across.bootstrap import boot_connection
+from test_across.importer import boot_connection
 def get_filename(): return __file__
 def func():
     with boot_connection() as conn: return get_filename(), conn.call(get_filename)
@@ -165,7 +167,7 @@ sys.path.insert(0, {!r})
 class MainTest(unittest.TestCase):
     def test_main_file(self):
         path = create_script("""
-from test_across.bootstrap import boot_connection
+from test_across.importer import boot_connection
 def func(): return 42
 if __name__ == '__main__':
     with boot_connection(__name__) as conn:
@@ -175,7 +177,7 @@ if __name__ == '__main__':
 
     def test_main_module(self):
         path = create_script("""
-from test_across.bootstrap import boot_connection
+from test_across.importer import boot_connection
 def func(): return 42
 if __name__ == '__main__':
     with boot_connection(__name__) as conn:
@@ -188,7 +190,7 @@ if __name__ == '__main__':
 
     def test_nested_connections(self):
         path = create_script("""
-from test_across.bootstrap import boot_connection
+from test_across.importer import boot_connection
 def func(depth):
     if depth == 0: return 42
     else:
@@ -200,7 +202,7 @@ if __name__ == '__main__':
 
     def test_traceback(self):
         path = create_script("""
-from test_across.bootstrap import boot_connection
+from test_across.importer import boot_connection
 import traceback, sys
 def func(): raise ValueError
 if __name__ == '__main__':
@@ -217,7 +219,7 @@ if __name__ == '__main__':
 
     def test_unsafe_main(self):
         path = create_script("""
-from test_across.bootstrap import boot_connection
+from test_across.importer import boot_connection
 from across import OperationError
 def func(): return 1
 with boot_connection(__name__) as conn:

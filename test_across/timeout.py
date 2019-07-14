@@ -8,7 +8,6 @@ import errno
 import across
 import across.channels
 
-
 from .utils import MemoryChannel
 
 
