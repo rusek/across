@@ -27,7 +27,7 @@ def _compile_safe_main(source, filename):
     return None
 
 
-def _get_loader_with_fullname(fullname):
+def _get_remote_loader(fullname):
     if fullname == '__main__':
         # Let's deal with various quirks of runpy module:
         #   - __spec__ is None when using 'python -c script.py', we have to fall back to __loader__
@@ -40,28 +40,27 @@ def _get_loader_with_fullname(fullname):
                 loader = getattr(main_mod, '__loader__', None)
                 if loader is None:
                     raise ValueError('__main__.__loader__ is not set')
-                return loader, fullname
+                return _interrogate_loader(loader, fullname)
             else:
                 if spec.loader is None:
                     raise ValueError('{!r}.loader is not set'.format(spec))
-                return spec.loader, spec.name
+                return _interrogate_loader(spec.loader, spec.name)
 
     try:
         spec = importlib.util.find_spec(fullname)
     except ImportError:
-        return None, None
-    if spec is None:
-        return None, None
-    if spec.loader is None:
-        raise ValueError('{!r}.loader is not set'.format(spec))
-    return spec.loader, fullname
-
-
-def _get_remote_loader(fullname):
-    loader, fullname = _get_loader_with_fullname(fullname)
-    # this (checking if module exists) must go before _is_stdlib_module
-    if loader is None:
         return None
+    if spec is None:
+        return None
+    if spec.loader is None:
+        # Yet another hack, this time for implicit namespace packages.
+        if bool(spec.submodule_search_locations) and not spec.has_location and spec.origin == 'namespace':
+            return _RemoteLoader('', True, '<source>')
+        raise ValueError('{!r}.loader is not set'.format(spec))
+    return _interrogate_loader(spec.loader, fullname)
+
+
+def _interrogate_loader(loader, fullname):
     get_source = getattr(loader, 'get_source', None)
     if get_source is None:
         raise TypeError('Loader {!r} for module {} does not implement get_source method'.format(loader, fullname))

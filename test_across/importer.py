@@ -216,6 +216,23 @@ def func():
             with self.assertRaises(ImportError):
                 conn.execute('import {}'.format(submodule.__name__))
 
+    def test_implicit_namespace_packages(self):
+        path = mktemp()
+        module_name = make_fake_module_name()
+        make_files({path: {
+            'dir1': {module_name: {'submod1.py': 'x=1'}},
+            'dir2': {module_name: {'submod2.py': 'x=2'}},
+        }})
+        orig_sys_path = sys.path[:]
+        sys.path[:0] = [os.path.join(path, 'dir1'), os.path.join(path, 'dir2')]
+        try:
+            with boot_connection(module_name) as conn:
+                self.assertEqual(conn.execute('from {}.submod1 import x; x'.format(module_name)), 1)
+                self.assertEqual(conn.execute('from {}.submod2 import x; x'.format(module_name)), 2)
+                self.assertRaises(ImportError, conn.execute, 'from {} import submod3'.format(module_name))
+        finally:
+            sys.path[:] = orig_sys_path
+
 
 def create_script(script):
     script = """
