@@ -84,6 +84,23 @@ def _get_remote_loader(fullname):
     return _RemoteLoader(source, package, filename)
 
 
+# For packages, __path__ attribute holds a list of directories where submodules are located. This object
+# acts as a replacement of that list. First, it allows detecting if parent module was loaded by us. Second,
+# it prevents mutating __path__ by user code.
+class AcrossSearchPath:
+    def __getitem__(self, item):
+        raise IndexError
+
+    def __iter__(self):
+        return iter(())
+
+    def __len__(self):
+        return 0
+
+    def __contains__(self, item):
+        return False
+
+
 class _RemoteFinder(object):
     def __init__(self, loaders):
         self.__loaders = loaders
@@ -94,6 +111,8 @@ class _RemoteFinder(object):
         for name in modules:
             if '.' in name:
                 raise ValueError('Not a top-level module: {}'.format(name))
+            if name in sys.modules and name not in self.__exported_modules and name != '__main__':
+                raise ValueError('Cannot export module {} because it is already imported'.format(name))
         had_main = ('__main__' in self.__exported_modules)
         self.__exported_modules.update(modules)
         if '__main__' in self.__exported_modules and not had_main:
@@ -106,20 +125,27 @@ class _RemoteFinder(object):
         self.__conn = conn
 
     def find_spec(self, fullname, path=None, target=None):
-        loader = self.find_module(fullname)
+        loader = self.find_module(fullname, path)
         if loader is None:
             return None
-        return importlib.util.spec_from_loader(fullname, loader)
+        spec = importlib.util.spec_from_loader(fullname, loader)
+        if spec.submodule_search_locations is not None:  # is it a package?
+            spec.submodule_search_locations = AcrossSearchPath()
+        return spec
 
     def find_module(self, fullname, path=None):
+        top_name, dot, _ = fullname.partition('.')
+        # Skip if topmost module is not exported
+        if top_name not in self.__exported_modules:
+            return None
+        # Skip if parent module was not loaded by us
+        if dot and not isinstance(path, AcrossSearchPath):
+            return None
+
         if fullname not in self.__loaders:
-            if fullname.partition('.')[0] not in self.__exported_modules:
-                loader = None
-            elif self.__conn is None:
-                loader = None
-            else:
-                loader = self.__conn.call(_get_remote_loader, fullname)
-            self.__loaders[fullname] = loader
+            if self.__conn is None:
+                return None
+            self.__loaders[fullname] = self.__conn.call(_get_remote_loader, fullname)
         return self.__loaders[fullname]
 
 
@@ -170,6 +196,7 @@ class _RemoteLoader(object):
 
 _minimal_modules = (
     'across',
+    'across.utils',
     'across.channels',
     'across._importer',
 )

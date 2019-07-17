@@ -3,6 +3,7 @@ import sys
 import traceback
 import types
 import importlib.util
+import importlib.machinery
 import os.path
 import subprocess
 
@@ -17,7 +18,10 @@ def subtract(left, right):
     return left - right
 
 
-def boot_connection(modname=__name__, cwd=None):
+top_name = __name__.partition('.')[0]
+
+
+def boot_connection(export=top_name, cwd=None):
     if cwd is None:
         cwd = mktemp()
         os.mkdir(cwd)
@@ -27,7 +31,11 @@ def boot_connection(modname=__name__, cwd=None):
         across.get_bios(),
     ], cwd=cwd)
     conn = across.Connection(chan)
-    conn.export(modname.partition('.')[0])
+    if export is None:
+        export = []
+    elif isinstance(export, str):
+        export = [export]
+    conn.export(*export)
     return conn
 
 
@@ -40,27 +48,47 @@ def _import_nonexistent(name):
         raise AssertionError('Importing {} should fail'.format(name))
 
 
+def make_files(files, base=''):
+    for path, contents in files.items():
+        path = os.path.join(base, path)
+        if isinstance(contents, dict):
+            os.mkdir(path)
+            make_files(contents, base=path)
+        else:  # str
+            with open(path, 'w') as handle:
+                handle.write(contents)
+
+
 fake_mod_counter = 0
 
 
-def make_fake_module(source, filename):
+def make_fake_module_name():
+    global fake_mod_counter
+
+    modname = '{}_{}'.format(__name__.partition('.')[0], fake_mod_counter)
+    fake_mod_counter += 1
+    return modname
+
+
+def make_fake_module(source, filename=None, is_package=False, name=None):
     class Loader:
         def get_source(self, fullname):
             return source
 
         def is_package(self, fullname):
-            return False
+            return is_package
 
         def get_filename(self, fullname):
             return filename
 
-    global fake_mod_counter
-
-    modname = '{}_{}'.format(__name__, fake_mod_counter)
-    fake_mod_counter += 1
-
-    module = sys.modules[modname] = types.ModuleType(modname)
-    module.__spec__ = importlib.util.spec_from_loader(__name__, Loader())
+    if name is None:
+        name = make_fake_module_name()
+    if filename is None:
+        filename = '<string>'
+    module = sys.modules[name] = types.ModuleType(name)
+    module.__spec__ = importlib.machinery.ModuleSpec(name, Loader(), origin=filename, is_package=is_package)
+    module.__file__ = filename
+    module.__path__ = module.__spec__.submodule_search_locations
     exec(compile(source, filename, 'exec'), module.__dict__)
     return module
 
@@ -85,7 +113,7 @@ class BootstrapTest(unittest.TestCase):
 
     def test_exporting_over_non_bootstrapped_connection_fails(self):
         with make_connection() as conn:
-            self.assertRaises(ValueError, conn.export, __name__.partition('.')[0])
+            self.assertRaises(ValueError, conn.export, top_name)
 
     def test_importing_non_existent_module_remotely(self):
         with boot_connection() as conn:
@@ -102,6 +130,13 @@ class BootstrapTest(unittest.TestCase):
             else:
                 self.fail('Exception not raised')
 
+    def test_exporting_already_exported_module_has_no_effect(self):
+        with boot_connection(None) as conn:
+            conn.export(top_name)
+            conn.export(top_name)
+            self.assertEqual(conn.call(subtract, 5, 3), 2)
+            conn.export(top_name)
+
     # This test verifies that if a local module is implemented in "/some/modfile.py", then remote process will
     # not try to use its own version of "/some/modfile.py" for obtaining source lines for traceback
     def test_remote_files_are_not_used_for_generating_remote_tracebacks(self):
@@ -114,7 +149,7 @@ class BootstrapTest(unittest.TestCase):
         ]
 
         module = make_fake_module(''.join(source_lines), path)
-        with boot_connection() as conn:
+        with boot_connection(module.__name__) as conn:
             try:
                 conn.call(module.func)
             except module.FuncError:
@@ -126,7 +161,7 @@ class BootstrapTest(unittest.TestCase):
     def test_dummy_filenames_are_left_unchanged(self):
         dummy_filename = '<string>'
         module = make_fake_module('def func(): return __file__', dummy_filename)
-        with boot_connection() as conn:
+        with boot_connection(module.__name__) as conn:
             self.assertEqual(conn.call(module.func), dummy_filename)
 
     def test_filenames_are_not_repeatedly_mangled(self):
@@ -135,19 +170,51 @@ class BootstrapTest(unittest.TestCase):
 from test_across.importer import boot_connection
 def get_filename(): return __file__
 def func():
-    with boot_connection() as conn: return get_filename(), conn.call(get_filename)
+    with boot_connection([__name__, 'test_across']) as conn: return get_filename(), conn.call(get_filename)
         """
         module = make_fake_module(source, path)
-        with boot_connection() as conn:
+        with boot_connection([top_name, module.__name__]) as conn:
             first_filename, second_filename = conn.call(module.func)
             self.assertEqual(first_filename, second_filename)
 
     def test_local_modules_take_precendence(self):
         path = mktemp()
-        os.mkdir(path)
-        open(os.path.join(path, __name__.partition('.')[0]) + '.py', 'w').close()
+        make_files({path: {top_name + '.py': ''}})
         with boot_connection(cwd=path) as conn:
             self.assertEqual(conn.call(subtract, 4, 3), 1)
+
+    def test_remote_submodules_are_not_available_when_using_local_modules(self):
+        path = mktemp()
+        module_name = make_fake_module_name()
+        remote_submodule_name = 'submod'
+
+        make_files({path: {module_name: {'__init__.py': 'remote=True', '{}.py'.format(remote_submodule_name): ''}}})
+        make_fake_module(
+            'remote=False',
+            filename=os.path.join(path, module_name, '__init__.py'),
+            is_package=True,
+            name=module_name
+        )
+        with boot_connection(module_name) as conn:
+            self.assertFalse(conn.execute('from {} import remote; remote'.format(module_name)))  # sanity check
+            with self.assertRaises(ImportError):
+                conn.execute('import {}.{}'.format(module_name, remote_submodule_name))
+
+    def test_exporting_is_not_allowed_when_module_is_remotely_imported(self):
+        path = mktemp()
+        make_files({path: {top_name + '.py': ''}})
+        with boot_connection(None, cwd=path) as conn:
+            conn.execute('import {}'.format(top_name))
+            with self.assertRaisesRegex(ValueError, 'Cannot export module .* because it is already imported'):
+                conn.export(top_name)
+
+    def test_local_submodules_are_not_used_when_using_remote_module(self):
+        module = make_fake_module('', is_package=True)
+        submodule = make_fake_module('', name='{}.submod'.format(module.__name__))
+        with boot_connection([top_name, module.__name__]) as conn:
+            conn.call_ref(make_fake_module, '', is_package=True, name=module.__name__)
+            with self.assertRaises(ImportError):
+                conn.execute('import {}'.format(submodule.__name__))
 
 
 def create_script(script):
@@ -232,6 +299,24 @@ with boot_connection(__name__) as conn:
         if '__main__ module cannot be safely imported remotely' not in str(err): raise
 """)
         subprocess.check_call([sys.executable, path])
+
+    def test_exporting_main_when_already_exported_has_no_effect(self):
+        path = create_script("""
+from test_across.importer import boot_connection
+import itertools
+counter = itertools.count()
+def func(expected):
+    value = next(counter)
+    if value != expected: raise AssertionError((value, expected))
+if __name__ == '__main__':
+    with boot_connection(__name__) as conn:
+        conn.call(func, 0)
+        conn.call(func, 1)
+        conn.export(__name__)
+        conn.call(func, 2)
+""")
+        subprocess.check_call([sys.executable, path])
+
 
 
 class SafeMainTest(unittest.TestCase):
