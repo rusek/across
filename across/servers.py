@@ -5,6 +5,7 @@ import sys
 import os.path
 
 from .utils import ignore_exception_at
+from . import _get_bios_superblock
 import across.channels
 
 
@@ -128,7 +129,7 @@ os.close(devnull_fd)
 """
 
 _socket_bios += r"""import struct
-sock.sendall(b'\xe3\x5b\x9e\x78\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00')
+sock.sendall({superblock!r})
 def recvall(size):
     buf = b''
     while len(buf) < size:
@@ -136,7 +137,7 @@ def recvall(size):
     return buf
 ACROSS = 'socket', sock
 exec(recvall(struct.unpack('>I', recvall(20)[-4:])[0]))
-"""
+""".format(superblock=_get_bios_superblock())
 
 
 class BootstrappingConnectionHandler(ProcessConnectionHandler):

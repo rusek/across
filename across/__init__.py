@@ -220,18 +220,20 @@ class _SenderThread(threading.Thread):
 
 _SUPERBLOCK_SIZE = 16
 _MAGIC = 0xe35b9e78
-
-_OS = 0
-_BIOS = 1
+_BIOS_MAGIC = 0xe54e6d01
 
 
 def _get_superblock():
-    return struct.pack('>IB', _MAGIC, _OS) + b'\0' * (_SUPERBLOCK_SIZE - 5)
+    return struct.pack('>IBBB', _MAGIC, *_version) + b'\0' * (_SUPERBLOCK_SIZE - 7)
+
+
+def _get_bios_superblock():
+    return struct.pack('>IBBB', _BIOS_MAGIC, 0, 1, 0) + b'\0' * (_SUPERBLOCK_SIZE - 7)
 
 
 def get_bios():
     to_skip = _SUPERBLOCK_SIZE + 4
-    to_send = struct.pack('>IB', _MAGIC, _BIOS) + b'\0' * (_SUPERBLOCK_SIZE - 5)
+    to_send = _get_bios_superblock()
     return ("import sys;i,o=sys.stdin.buffer,sys.stdout.buffer;o.write({!r});o.flush();i.read({!r});"
             "ACROSS='stdio',;exec(i.readline())".format(to_send, to_skip))
 
@@ -239,8 +241,6 @@ def get_bios():
 def _get_greeting_frame(timeout_ms):
     msg = _Message()
     msg.put_uint(_GREETING)
-    for num in sys.version_info[:3] + _version:
-        msg.put_uint(num)
     msg.put_uint(timeout_ms)
     return msg.as_bytes()
 
@@ -578,13 +578,19 @@ class Connection:
     def __receive_superblock(self):
         while True:
             superblock = self.__framer.recv_superblock(_SUPERBLOCK_SIZE)
-            magic, mode = struct.unpack_from('>IB', superblock)
-            if _MAGIC != magic:
-                raise ProtocolError('Invalid magic: 0x{:x}'.format(magic))
-            if mode == _OS:
+            magic, major, minor, patch = struct.unpack_from('>IBBB', superblock)
+            if magic == _MAGIC:
+                if (major, minor) != _version[:2]:
+                    raise ProtocolError('Local across {} is not compatible with remote {}.{}.{}'.format(
+                        __version__, major, minor, patch
+                    ))
                 self.__sender.send_frame(_get_greeting_frame(self.__timeout_ms))
                 break
-            elif mode == _BIOS:
+            elif magic == _BIOS_MAGIC:
+                if (major, minor, patch) > _version:
+                    raise ProtocolError('At least across {}.{}.{} is needed to bootstrap connection'.format(
+                        major, minor, patch
+                    ))
                 options = Options(
                     timeout=self.__timeout_ms / 1000,
                 )
@@ -592,7 +598,7 @@ class Connection:
                 self.__sender.send_frame(payload)
                 self.__sender.send_superblock(_get_superblock())
             else:
-                raise ProtocolError('Invalid mode: {}'.format(mode))
+                raise ProtocolError('Invalid magic: 0x{:x}'.format(magic))
 
     def __receive_msgs(self):
         while True:
@@ -609,12 +615,7 @@ class Connection:
                     break
 
     def __handle_greeting_locked(self, msg):
-        python_version = (msg.get_uint(), msg.get_uint(), msg.get_uint())
-        across_version = (msg.get_uint(), msg.get_uint(), msg.get_uint())  # unused for now
         timeout_ms = msg.get_uint()
-        if (python_version[0] >= 3) != (sys.version_info[0] >= 3):
-            raise ProtocolError('Remote python {} is not compatible with local {}'.format(
-                python_version, sys.version_info[:3]))
         if timeout_ms:
             # idle messages should be sent after a half of timeout passes
             idle_timeout = timeout_ms / 2000.0

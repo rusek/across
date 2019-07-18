@@ -1,24 +1,15 @@
 import unittest
 import struct
-import sys
+import zlib
 
 import across
 import across.channels
 
 
-class GreetingTest(unittest.TestCase):
-    def test_greeting(self):
-        frame = across._get_greeting_frame(0)
-        self.assertEqual(len(frame), 1 + 3 + 3 + 1)
-
-        msg_type, = struct.unpack_from('>B', frame, 0)
-        self.assertEqual(msg_type, across._GREETING)
-
-        python_version = struct.unpack_from('BBB', frame, 1)
-        self.assertEqual(python_version, sys.version_info[:3])
-
-        across_version = struct.unpack_from('BBB', frame, 4)
-        self.assertEqual('.'.join(map(str, across_version)), across.__version__)
+class ProtocolTest(unittest.TestCase):
+    def test_magic(self):
+        self.assertEqual(across._MAGIC, zlib.crc32(b'across'))
+        self.assertEqual(across._BIOS_MAGIC, zlib.crc32(b'acrossbios'))
 
 
 class ProtocolErrorChannel(across.channels.Channel):
@@ -78,22 +69,21 @@ class ProtocolErrorTest(unittest.TestCase):
             superblock = b'x' * across._SUPERBLOCK_SIZE
             self.__simulate_error(data=superblock, prepend_superblock=False)
 
-    def test_invalid_superblock_mode(self):
-        with self.assertRaisesRegex(across.ProtocolError, 'Invalid mode: 42'):
-            superblock = struct.pack('>IB', across._MAGIC, 42) + b'\x00' * (across._SUPERBLOCK_SIZE - 5)
+    def test_incompatible_peer(self):
+        with self.assertRaisesRegex(
+            across.ProtocolError,
+            'Local across .* is not compatible with remote 78.98.55'
+        ):
+            superblock = struct.pack('>IBBB', across._MAGIC, 78, 98, 55) + b'\0' * (across._SUPERBLOCK_SIZE - 7)
             self.__simulate_error(data=superblock, prepend_superblock=False)
 
-    def test_incompatible_python_version(self):
-        if sys.version_info[0] >= 3:
-            python_version = (2, 7, 0)
-        else:
-            python_version = (3, 4, 0)
-        msg = across._Message()
-        msg.put_uint(across._GREETING)
-        for num in python_version + across._version:
-            msg.put_uint(num)
-        with self.assertRaisesRegex(across.ProtocolError, 'Remote python .* is not compatible with local .*'):
-            self.__simulate_error(msg=msg, prepend_greeting=False)
+    def test_incompatible_bios_peer(self):
+        with self.assertRaisesRegex(
+            across.ProtocolError,
+            'At least across 78.98.55 is needed to bootstrap connection'
+        ):
+            superblock = struct.pack('>IBBB', across._BIOS_MAGIC, 78, 98, 55) + b'\0' * (across._SUPERBLOCK_SIZE - 7)
+            self.__simulate_error(data=superblock, prepend_superblock=False)
 
     def test_apply_in_greeting_state(self):
         with self.assertRaisesRegex(
