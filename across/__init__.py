@@ -14,6 +14,7 @@ import warnings
 import copy
 import errno
 
+from ._importer import get_bootstrap_line, take_finder
 from .utils import ignore_exception_at, Executor, Future, SimpleQueue, format_exception_only
 from .channels import PipeChannel, SocketChannel, ProcessChannel
 
@@ -228,16 +229,11 @@ def _get_superblock():
     return struct.pack('>IB', _MAGIC, _OS) + b'\0' * (_SUPERBLOCK_SIZE - 5)
 
 
-def _run():
-    with Connection.from_stdio() as conn:
-        conn.wait()
-
-
 def get_bios():
     to_skip = _SUPERBLOCK_SIZE + 4
     to_send = struct.pack('>IB', _MAGIC, _BIOS) + b'\0' * (_SUPERBLOCK_SIZE - 5)
     return ("import sys;i,o=sys.stdin.buffer,sys.stdout.buffer;o.write({!r});o.flush();i.read({!r});"
-            "exec(i.readline());from across import _run;_run()".format(to_send, to_skip))
+            "ACROSS='stdio',;exec(i.readline())".format(to_send, to_skip))
 
 
 def _get_greeting_frame(timeout_ms):
@@ -321,7 +317,6 @@ class Connection:
         else:
             timeout_ms = 0
 
-        from ._importer import take_finder
         finder = take_finder()
         if finder:
             finder.set_connection(self)
@@ -590,8 +585,10 @@ class Connection:
                 self.__sender.send_frame(_get_greeting_frame(self.__timeout_ms))
                 break
             elif mode == _BIOS:
-                from ._importer import get_bootstrap_line
-                payload = get_bootstrap_line().encode('ascii')
+                options = Options(
+                    timeout=self.__timeout_ms / 1000,
+                )
+                payload = get_bootstrap_line(_start, options).encode('ascii')
                 self.__sender.send_frame(payload)
                 self.__sender.send_superblock(_get_superblock())
             else:
@@ -747,6 +744,18 @@ def _shutdown():
 
 
 atexit.register(_shutdown)
+
+
+# Start a remotely bootstrapped connection. 'args' is the value of 'ACROSS' variable set by BIOS scripts.
+def _start(options, args):
+    if args[0] == 'stdio':
+        conn = Connection.from_stdio(options=options)
+    elif args[0] == 'socket':
+        conn = Connection.from_socket(args[1], options=options)
+    else:
+        raise RuntimeError('Unrecognized channel type {!r}, args={!r}'.format(args[0], args))
+    with conn:
+        conn.wait()
 
 
 def _execute(source, scope):

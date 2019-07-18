@@ -1,8 +1,14 @@
+"""
+Across import machinery, full of deadly traps and zombie unicorns. Stay away.
+"""
+
 import sys
 import importlib
 import importlib.util
 import types
 import ast
+import pickle
+import functools
 
 
 # Compile given source, but skip the code inside "if __name__ == '__main__'". When such "if" statement cannot
@@ -201,15 +207,16 @@ _minimal_modules = (
 )
 
 
-def get_bootstrap_line():
-    modules = {}
+def get_bootstrap_line(func, *args):
+    data = {}
     for fullname in _minimal_modules:
         loader = _get_remote_loader(fullname)
         if loader is None:
             raise ImportError('{} not found'.format(fullname))
-        modules[fullname] = loader.deconstruct()
+        data[fullname] = loader.deconstruct()
+    data[None] = pickle.dumps((func, args), protocol=3)
     return ("__across_vars={!r},{!r},{{}};exec(__across_vars[0][__across_vars[1]][0],__across_vars[2]);"
-            "__across_vars[2]['_bootstrap'](__across_vars[0],__across_vars[1])\n".format(modules, __name__))
+            "__across_vars[2]['_bootstrap'](__across_vars[0],__across_vars[1])(ACROSS)\n".format(data, __name__))
 
 
 def _module_from_spec(spec):
@@ -239,6 +246,7 @@ def _bootstrap(data, name):
     if name in sys.modules:
         raise RuntimeError('{} already in sys.modules'.format(name))
 
+    pickled_func_args = data.pop(None)
     tmp_loader = _RemoteLoader(*data[name])
     spec = importlib.util.spec_from_loader(name, tmp_loader)
     module = _module_from_spec(spec)
@@ -255,3 +263,6 @@ def _bootstrap(data, name):
     sys.meta_path.insert(0, finder)
 
     module._finder = finder
+
+    func, args = pickle.loads(pickled_func_args)
+    return functools.partial(func, *args)

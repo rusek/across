@@ -134,11 +134,8 @@ def recvall(size):
     while len(buf) < size:
         buf += sock.recv(size - len(buf)) or sys.exit(1)
     return buf
+ACROSS = 'socket', sock
 exec(recvall(struct.unpack('>I', recvall(20)[-4:])[0]))
-from across import Connection
-from across.channels import SocketChannel
-with Connection(SocketChannel(sock=sock)) as conn:
-    conn.wait()
 """
 
 
