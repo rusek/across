@@ -1,8 +1,8 @@
 import unittest
 from concurrent.futures import Future
 
-import across
-from across.channels import Channel
+from across import Connection, DisconnectError
+from across._channels import Channel
 
 from .utils import make_connection, make_channel_pair, ConnectionChannel, Box, call_process
 
@@ -45,7 +45,7 @@ class ContextManagerTest(unittest.TestCase):
             conn.__enter__()
 
     def test_enter_when_connect_fails(self):
-        conn = across.Connection(UnconnectableChannel())
+        conn = Connection(UnconnectableChannel())
         with self.assertRaises(ConnectError):
             conn.__enter__()
         with self.assertRaisesRegex(ValueError, 'Connection is closed'):
@@ -54,7 +54,7 @@ class ContextManagerTest(unittest.TestCase):
     def test_enter_after_cancel(self):
         # There are no writes to chan2, so handshake should never complete
         chan1, chan2 = make_channel_pair()
-        conn = across.Connection(chan1)
+        conn = Connection(chan1)
         conn.cancel()
         with self.assertRaises(OSError):
             conn.__enter__()
@@ -62,12 +62,12 @@ class ContextManagerTest(unittest.TestCase):
     def test_exit_after_disconnect(self):
         chan = ConnectionChannel()
         with self.assertRaises(ValueError):
-            with across.Connection(chan) as conn:
+            with Connection(chan) as conn:
                 conn.call(Box(chan.cancel))
 
     def test_enter_after_remote_close(self):
         chan1, chan2 = make_channel_pair()
-        conn1, conn2 = across.Connection(chan1), across.Connection(chan2)
+        conn1, conn2 = Connection(chan1), Connection(chan2)
         conn2.close()
         with conn1:
             pass
@@ -85,7 +85,7 @@ class SecondError(Exception):
     pass
 
 
-class FailingChannel(across.channels.Channel):
+class FailingChannel(Channel):
     def __init__(self):
         self.connect_future = Future()
         self.send_future = Future()
@@ -111,16 +111,16 @@ class DisconnectErrorTest(unittest.TestCase):
     def test_call_after_close(self):
         conn = make_connection()
         conn.close()
-        with self.assertRaisesRegex(across.DisconnectError, 'Connection is closed'):
+        with self.assertRaisesRegex(DisconnectError, 'Connection is closed'):
             conn.call(nop)
 
     def test_communication_error_during_call(self):
         chan = ConnectionChannel()
-        conn = across.Connection(chan)
+        conn = Connection(chan)
         try:
-            with self.assertRaisesRegex(across.DisconnectError, 'Connection was aborted due to .*'):
+            with self.assertRaisesRegex(DisconnectError, 'Connection was aborted due to .*'):
                 conn.call(Box(chan.cancel))  # simulate communication error with channel.cancel
-            with self.assertRaisesRegex(across.DisconnectError, 'Connection was aborted due to .*'):
+            with self.assertRaisesRegex(DisconnectError, 'Connection was aborted due to .*'):
                 conn.call(nop)
         finally:
             try:
@@ -130,16 +130,16 @@ class DisconnectErrorTest(unittest.TestCase):
 
     def test_remote_close_during_call(self):
         chan, rchan = make_channel_pair()
-        conn = across.Connection(chan)
-        across.Connection(rchan).close()
-        with self.assertRaisesRegex(across.DisconnectError, 'Connection was remotely closed'):
+        conn = Connection(chan)
+        Connection(rchan).close()
+        with self.assertRaisesRegex(DisconnectError, 'Connection was remotely closed'):
             conn.call(nop)
         conn.close()
 
     def test_call_after_cancel(self):
         conn = make_connection()
         conn.cancel()
-        with self.assertRaisesRegex(across.DisconnectError, 'Connection was aborted due to .*'):
+        with self.assertRaisesRegex(DisconnectError, 'Connection was aborted due to .*'):
             conn.call(nop)
         try:
             conn.close()
@@ -157,7 +157,7 @@ class DisconnectErrorTest(unittest.TestCase):
         chan = FailingChannel()
         chan.connect_future.set_exception(FirstError())
         with self.assertRaises(FirstError):
-            with across.Connection(chan):
+            with Connection(chan):
                 pass
 
     def test_recv_exception_is_ignored_after_send_exception(self):
@@ -165,7 +165,7 @@ class DisconnectErrorTest(unittest.TestCase):
         chan.connect_future.set_result(None)
         chan.close_future.set_result(None)
         with self.assertRaises(FirstError):
-            conn = across.Connection(chan)
+            conn = Connection(chan)
             chan.send_future.set_exception(FirstError())
             conn.wait()
             chan.recv_future.set_exception(SecondError())
@@ -178,5 +178,5 @@ class DisconnectErrorTest(unittest.TestCase):
         chan.recv_future.set_exception(FirstError())
         chan.close_future.set_exception(SecondError())
         with self.assertRaises(FirstError):
-            with across.Connection(chan) as conn:
+            with Connection(chan) as conn:
                 conn.wait()

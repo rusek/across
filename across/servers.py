@@ -4,9 +4,8 @@ import subprocess
 import sys
 import os.path
 
-from .utils import ignore_exception_at, logger as _logger, get_debug_level, set_debug_level
-from . import _get_bios_superblock
-import across.channels
+from ._utils import ignore_exception_at, logger as _logger, get_debug_level, set_debug_level
+from . import _get_bios_superblock, Connection
 
 
 _windows = (sys.platform == 'win32')
@@ -33,8 +32,7 @@ class LocalConnectionHandler(ConnectionHandler):
             if self.__closing:
                 sock.close()
                 return
-            channel = across.channels.SocketChannel(sock=sock)
-            conn = across.Connection(channel, on_stopped=self.__connection_stopped)
+            conn = Connection.from_socket(sock, on_stopped=self.__connection_stopped)
             self.__unclosed_conns.add(conn)
 
     def __close_stopped_connection_locked(self):
@@ -211,7 +209,7 @@ def main():
         devnull_fd = os.open(os.devnull, os.O_RDONLY)
         os.dup2(devnull_fd, 0)
         os.close(devnull_fd)
-    with across.Connection(across.channels.SocketChannel(sock=sock)) as conn:
+    with Connection.from_socket(sock) as conn:
         conn.wait()
 
 

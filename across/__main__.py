@@ -2,7 +2,7 @@ import argparse
 
 from . import __version__, Connection
 from .servers import run_tcp, run_unix, BootstrappingConnectionHandler
-from .utils import set_debug_level
+from ._utils import set_debug_level
 
 
 def _parse_args():

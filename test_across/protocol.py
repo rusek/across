@@ -3,7 +3,7 @@ import struct
 import zlib
 
 import across
-import across.channels
+from across._channels import Channel
 
 
 class ProtocolTest(unittest.TestCase):
@@ -12,7 +12,7 @@ class ProtocolTest(unittest.TestCase):
         self.assertEqual(across._BIOS_MAGIC, zlib.crc32(b'acrossbios'))
 
 
-class ProtocolErrorChannel(across.channels.Channel):
+class ProtocolErrorChannel(Channel):
     def __init__(self, data):
         self.__buffer = memoryview(data)
 

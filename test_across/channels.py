@@ -4,7 +4,7 @@ import socket
 import time
 import os.path
 
-from across.channels import SocketChannel, Channel
+from across._channels import SocketChannel, Channel
 
 from .utils import par, mktemp, localhost, localhost_ipv6, windows, skip_if_no_unix_sockets
 
@@ -300,7 +300,7 @@ class ResolverTest(unittest.TestCase):
         server3 = BasicSocketServer(family=socket.AF_INET, address=(localhost, 0))
         server3.listen()
 
-        with unittest.mock.patch('across.channels._getaddrinfo') as mock:
+        with unittest.mock.patch('across._channels._getaddrinfo') as mock:
             fake_address = ('fake', 777)
             mock.return_value = [
                 (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, '', server.get_address())

@@ -14,8 +14,8 @@ import unittest
 import sys
 import socket
 
-import across
-import across.channels
+from across import Connection
+from across._channels import Channel
 
 
 class _MemoryPipe:
@@ -75,7 +75,7 @@ class _MemoryPipe:
             self.__recv_condition.notify()
 
 
-class _MemoryChannel(across.channels.Channel):
+class _MemoryChannel(Channel):
     def __init__(self, stdin, stdout):
         self.__stdin = stdin
         self.__stdout = stdout
@@ -101,14 +101,14 @@ class ConnectionChannel(_MemoryChannel):
     def __init__(self):
         pipe1, pipe2 = _MemoryPipe(), _MemoryPipe()
         super().__init__(pipe1, pipe2)
-        self.__conn = across.Connection(_MemoryChannel(pipe2, pipe1))
+        self.__conn = Connection(_MemoryChannel(pipe2, pipe1))
 
     def close(self):
         self.__conn.close()
 
 
 def make_connection():
-    return across.Connection(ConnectionChannel())
+    return Connection(ConnectionChannel())
 
 
 _box_counter = 0

@@ -2,7 +2,7 @@ import unittest
 import threading
 import time
 
-from across.utils import Executor
+from across._utils import Executor
 
 
 class Counter(object):

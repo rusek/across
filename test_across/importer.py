@@ -7,9 +7,9 @@ import importlib.machinery
 import os.path
 import subprocess
 
-import across
-import across.channels
-from across.utils import get_debug_level
+from across import Connection, get_bios, set_debug_level
+from across._channels import ProcessChannel
+from across._utils import get_debug_level
 from across._importer import _compile_safe_main as compile_safe_main
 
 from .utils import mktemp, make_connection, call_process_with_stderr, logging_error_marker
@@ -26,12 +26,12 @@ def boot_connection(export=top_name, cwd=None):
     if cwd is None:
         cwd = mktemp()
         os.mkdir(cwd)
-    chan = across.channels.ProcessChannel([
+    chan = ProcessChannel([
         sys.executable,
         '-c',
-        across.get_bios(),
+        get_bios(),
     ], cwd=cwd)
-    conn = across.Connection(chan)
+    conn = Connection(chan)
     if export is None:
         export = []
     elif isinstance(export, str):
@@ -368,7 +368,7 @@ class DebugTest(unittest.TestCase):
 
 
 def _set_debug_level_and_boot_connection():
-    across.set_debug_level(10)
+    set_debug_level(10)
     with boot_connection() as conn:
         if conn.call(get_debug_level) != 10:
             raise AssertionError

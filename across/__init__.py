@@ -15,10 +15,10 @@ import copy
 import errno
 
 from ._importer import get_bootstrap_line, take_finder
-from .utils import (
+from ._utils import (
     ignore_exception_at, Executor, Future, SimpleQueue, format_exception_only, logger as _logger,
     IdentityAdapter, atomic_count, set_debug_level)
-from .channels import PipeChannel, SocketChannel, ProcessChannel
+from ._channels import PipeChannel, SocketChannel, ProcessChannel
 
 
 if sys.version_info < (3, 4):

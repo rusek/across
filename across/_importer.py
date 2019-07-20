@@ -259,8 +259,8 @@ class _RemoteLoader(object):
 # (which is a different story, because it needs to load itself).
 _core_module_names = (
     'across',
-    'across.utils',
-    'across.channels',
+    'across._utils',
+    'across._channels',
 )
 
 

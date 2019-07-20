@@ -6,7 +6,7 @@ import sys
 import socket
 import errno
 
-from .utils import logger as _logger
+from ._utils import logger as _logger
 
 
 _windows = (sys.platform == 'win32')
