@@ -194,7 +194,7 @@ except Exception as exc:
 pickle.dump(result, sys.stdout.buffer)"""],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
-        **popen_args,
+        **popen_args
     )
     stdout, stderr = process.communicate(pickle.dumps((func, args, kwargs)))
     if stderr is not None:

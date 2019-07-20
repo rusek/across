@@ -885,24 +885,30 @@ _code_tpl = compile('raise ValueError', '<traceback generator>', 'exec')
 # that is specifically crafted so that when 'traceback' module tries to format it, 'formatted_tb' string
 # is printed as well.
 def _generate_traceback_object(formatted_tb, packed_tb):
-    # argument order is described in help(types.CodeType)
-    code = types.CodeType(
-        _code_tpl.co_argcount,
-        _code_tpl.co_kwonlyargcount,
-        _code_tpl.co_nlocals,
-        _code_tpl.co_stacksize,
-        _code_tpl.co_flags,
-        _code_tpl.co_code,
-        _code_tpl.co_consts,
-        _code_tpl.co_names,
-        _code_tpl.co_varnames,
-        _code_tpl.co_filename,
-        '{}\n{}'.format(_code_tpl.co_name, formatted_tb.rstrip()),
-        _code_tpl.co_firstlineno,
-        _code_tpl.co_lnotab,
-        _code_tpl.co_freevars,
-        _code_tpl.co_cellvars,
-    )
+    co_name = '{}\n{}'.format(_code_tpl.co_name, formatted_tb.rstrip())
+    try:
+        replace = _code_tpl.replace  # since Python 3.8
+    except AttributeError:
+        # argument order is described in help(types.CodeType)
+        code = types.CodeType(
+            _code_tpl.co_argcount,
+            _code_tpl.co_kwonlyargcount,
+            _code_tpl.co_nlocals,
+            _code_tpl.co_stacksize,
+            _code_tpl.co_flags,
+            _code_tpl.co_code,
+            _code_tpl.co_consts,
+            _code_tpl.co_names,
+            _code_tpl.co_varnames,
+            _code_tpl.co_filename,
+            co_name,
+            _code_tpl.co_firstlineno,
+            _code_tpl.co_lnotab,
+            _code_tpl.co_freevars,
+            _code_tpl.co_cellvars,
+        )
+    else:
+        code = replace(co_name=co_name)
 
     try:
         exec(code, {_packed_tb_var: packed_tb})

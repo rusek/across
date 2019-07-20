@@ -114,7 +114,7 @@ def _get_remote_loader(fullname):
         return None
     if spec.loader is None:
         # Yet another hack, this time for implicit namespace packages.
-        if bool(spec.submodule_search_locations) and not spec.has_location and spec.origin == 'namespace':
+        if spec.submodule_search_locations:
             logger.debug('Querying module %r (namespace), spec=%r', fullname, spec)
             return _RemoteLoader('', True, '<source>')
         raise ValueError('{!r}.loader is not set'.format(spec))
