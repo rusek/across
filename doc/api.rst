@@ -281,6 +281,14 @@ Core functionality
 
     Exception indicating that an internal protocol error occurred while communicating with a remote process.
 
+.. function:: set_debug_level(level)
+
+    Print logs to standard error output. Following values of ``level`` are recognized:
+
+    -   ``0`` -- no output (default setting);
+    -   ``1`` -- print INFO, WARNING and ERROR messages;
+    -   ``2`` -- print additionally DEBUG messages.
+
 Logging integration
 -------------------
 

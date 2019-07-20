@@ -2,6 +2,7 @@ import argparse
 
 from . import __version__, Connection
 from .servers import run_tcp, run_unix, BootstrappingConnectionHandler
+from .utils import set_debug_level
 
 
 def _parse_args():
@@ -53,6 +54,13 @@ def _parse_args():
         const=('wait',),
         dest='action'
     )
+    parser.add_argument(
+        '-v',
+        help='print debug information to stderr; specify multiple times to increase verbosity',
+        action='count',
+        default=0,
+        dest='verbose',
+    )
 
     args = parser.parse_args()
     if not args.address:
@@ -78,6 +86,7 @@ def _parse_tcp(arg):
 
 
 def _handle_args(args):
+    set_debug_level(args.verbose)
     if args.server:
         _run_server(args)
     else:

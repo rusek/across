@@ -2,11 +2,47 @@
 Various helpers. For internal use only.
 """
 
-import threading
 import collections
 import traceback
 import sys
 import queue
+import logging
+import threading
+
+from ._importer import logger, get_debug_level, set_debug_level
+
+
+# Export utilities implemented in importer module
+logger = logger
+get_debug_level = get_debug_level
+set_debug_level = set_debug_level
+
+
+class _AtomicCounter:
+    def __init__(self, start=0):
+        self._value = start
+        self._lock = threading.Lock()
+
+    def __next__(self):
+        with self._lock:
+            value = self._value
+            self._value += 1
+            return value
+
+    def __iter__(self):
+        return self
+
+
+atomic_count = _AtomicCounter
+
+
+class IdentityAdapter(logging.LoggerAdapter):
+    def __init__(self, logger, identity):
+        super().__init__(logger, {})
+        self._prefix = '[{}] '.format(identity)
+
+    def process(self, msg, kwargs):
+        return self._prefix + msg, kwargs
 
 
 # Lightweight version of concurrent.futures.Future

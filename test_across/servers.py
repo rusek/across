@@ -6,8 +6,10 @@ import traceback
 import os
 
 import across.servers
+from across.utils import get_debug_level
 
-from .utils import mktemp, localhost, localhost_ipv6, windows, skip_if_no_unix_sockets
+from .utils import (mktemp, localhost, localhost_ipv6, windows, skip_if_no_unix_sockets, call_process_with_stderr,
+                    logging_error_marker)
 
 
 if windows:
@@ -181,3 +183,18 @@ class UnixServerTest(unittest.TestCase):
         with ServerWorker(across.servers.run_unix, path):
             with across.Connection.from_unix(path) as conn:
                 self.assertEqual(conn.call(add, 1, 2), 3)
+
+
+class DebugTest(unittest.TestCase):
+    def test_process_handler_forwards_debug_level(self):
+        _, stderr = call_process_with_stderr(_set_debug_level_and_connect)
+        self.assertNotIn(logging_error_marker, stderr)
+
+
+def _set_debug_level_and_connect():
+    across.set_debug_level(10)
+    handler = across.servers.ProcessConnectionHandler()
+    with ServerWorker(across.servers.run_tcp, localhost, 0, handler=handler) as worker:
+        with across.Connection.from_tcp(*worker.address) as conn:
+            if conn.call(get_debug_level) != 10:
+                raise AssertionError

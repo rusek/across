@@ -9,9 +9,10 @@ import subprocess
 
 import across
 import across.channels
+from across.utils import get_debug_level
 from across._importer import _compile_safe_main as compile_safe_main
 
-from .utils import mktemp, make_connection
+from .utils import mktemp, make_connection, call_process_with_stderr, logging_error_marker
 
 
 def subtract(left, right):
@@ -335,7 +336,6 @@ if __name__ == '__main__':
         subprocess.check_call([sys.executable, path])
 
 
-
 class SafeMainTest(unittest.TestCase):
     def test_safe(self):
         for source in [
@@ -359,3 +359,16 @@ class SafeMainTest(unittest.TestCase):
             'if __name__ == "__main__" == __name__: pass',
         ]:
             self.assertIsNone(compile_safe_main(source, '<string>'), source)
+
+
+class DebugTest(unittest.TestCase):
+    def test_debug_level(self):
+        _, stderr = call_process_with_stderr(_set_debug_level_and_boot_connection)
+        self.assertNotIn(logging_error_marker, stderr)
+
+
+def _set_debug_level_and_boot_connection():
+    across.set_debug_level(10)
+    with boot_connection() as conn:
+        if conn.call(get_debug_level) != 10:
+            raise AssertionError

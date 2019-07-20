@@ -6,6 +6,8 @@ import sys
 import socket
 import errno
 
+from .utils import logger as _logger
+
 
 _windows = (sys.platform == 'win32')
 
@@ -160,7 +162,7 @@ else:
 if _windows:
     # No support for timeouts and cancellation on Windows.
     class PipeChannel(Channel):
-        def __init__(self, in_pipe, out_pipe, close):
+        def __init__(self, in_pipe, out_pipe, close, logger=_logger):
             self.__in_pipe = in_pipe
             self.__out_pipe = out_pipe
             self.__close = close
@@ -181,7 +183,7 @@ else:
     import fcntl
 
     class PipeChannel(Channel):
-        def __init__(self, in_pipe, out_pipe, close):
+        def __init__(self, in_pipe, out_pipe, close, logger=_logger):
             out_pipe.flush()
             fcntl.fcntl(in_pipe, fcntl.F_SETFL, fcntl.fcntl(in_pipe, fcntl.F_GETFL) | os.O_NONBLOCK)
             self.__in_pipe = in_pipe
@@ -216,23 +218,29 @@ else:
                 self.__in_pipe.close()
                 self.__out_pipe.close()
 
+        def __repr__(self):
+            return '<{} {!r} {!r}>'.format(self.__class__.__name__, self.__in_pipe, self.__out_pipe)
+
 
 class ProcessChannel(PipeChannel):
-    def __init__(self, args=None, proc=None, **popen_extras):
+    def __init__(self, args=None, proc=None, logger=_logger, **popen_extras):
         if proc is None:
             if args is None:
                 raise ValueError('Arguments must be provided if process is omitted')
             proc = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, **popen_extras)
+            logger.debug('Started child process %r, pid=%r', args, proc.pid)
         else:
             if proc.stdin is None:
                 raise ValueError('Process standart input is not a pipe')
             if proc.stdout is None:
                 raise ValueError('Process standart output is not a pipe')
-        super().__init__(proc.stdout, proc.stdin, close=True)
+        super().__init__(proc.stdout, proc.stdin, close=True, logger=logger)
         self.__process = proc
         self.__args = args
+        self.__logger = logger
 
     def cancel(self):
+        self.__logger.debug('Killing process %r', self.__process.pid)
         try:
             self.__process.kill()
         except OSError:  # process already terminated
@@ -241,16 +249,21 @@ class ProcessChannel(PipeChannel):
 
     def close(self):
         super().close()
+        self.__logger.debug('Joining process %r', self.__process.pid)
         retcode = self.__process.wait()
+        self.__logger.debug('Process joined, retcode=%r', retcode)
         if retcode:
             raise subprocess.CalledProcessError(retcode, self.__args)
+
+    def __repr__(self):
+        return '<{} {!r}>'.format(self.__class__.__name__, self.__process.args)
 
 
 _getaddrinfo = socket.getaddrinfo  # patched by tests
 
 
 class SocketChannel(Channel):
-    def __init__(self, family=None, address=None, sock=None, resolve=False):
+    def __init__(self, family=None, address=None, sock=None, resolve=False, logger=_logger):
         if sock is None:
             if address is None:
                 raise ValueError('Address must be provided if socket is omitted')
@@ -268,6 +281,7 @@ class SocketChannel(Channel):
         self.__resolve = resolve
         self.__sock = sock
         self.__poller = _Poller()
+        self.__logger = logger
         if self.__sock is not None:
             self.__prepare_socket()
 
@@ -288,6 +302,7 @@ class SocketChannel(Channel):
             self.__sock = socket.socket(family, socket.SOCK_STREAM)
             self.__prepare_socket()
         try:
+            self.__logger.debug('Trying to connect to %r', address)
             self.__sock.connect(address)
             return
         except BlockingIOError:
@@ -316,6 +331,8 @@ class SocketChannel(Channel):
                 if not had_socket and self.__sock is not None:
                     self.__sock.close()
                     self.__sock = None
+
+                self.__logger.debug('connect throws %r', error)
                 last_error = error
 
         if last_error is None:
@@ -351,3 +368,6 @@ class SocketChannel(Channel):
     def close(self):
         self.__poller.close()
         self.__sock.close()
+
+    def __repr__(self):
+        return '<{} {!r}>'.format(self.__class__.__name__, self.__sock or self.__address)

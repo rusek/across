@@ -9,6 +9,56 @@ import types
 import ast
 import pickle
 import functools
+import logging
+import socket
+import time
+
+
+# Basic logging utilities. Since importer needs to be self-contained, they must be implemented here.
+
+_debug_level = 0
+_debug_handler = None
+
+logger = logging.getLogger('across')
+if not logger.handlers:
+    logger.addHandler(logging.NullHandler())
+
+
+def get_debug_level():
+    return _debug_level
+
+
+def set_debug_level(level):
+    global _debug_level
+    global _debug_handler
+
+    if level <= 0:
+        if _debug_handler is not None:
+            logger.removeHandler(_debug_handler)
+            logger.setLevel(logging.NOTSET)
+            _debug_handler = None
+    else:
+        if _debug_handler is None:
+            formatter = logging.Formatter(
+                '%(asctime)s %(levelname)-5s ' + socket.gethostname().replace('%', '%%') +
+                '/%(process)d %(message)s',
+                datefmt='%Y-%m-%d %H:%M:%S',
+            )
+            formatter.converter = time.gmtime
+
+            _debug_handler = logging.StreamHandler()
+            _debug_handler.setFormatter(formatter)
+            logger.addHandler(_debug_handler)
+
+        if level == 1:
+            logging_level = logging.INFO
+        else:
+            logging_level = logging.DEBUG
+
+        logger.setLevel(logging_level)
+        _debug_handler.setLevel(logging_level)
+
+    _debug_level = level
 
 
 # Compile given source, but skip the code inside "if __name__ == '__main__'". When such "if" statement cannot
@@ -46,23 +96,29 @@ def _get_remote_loader(fullname):
                 loader = getattr(main_mod, '__loader__', None)
                 if loader is None:
                     raise ValueError('__main__.__loader__ is not set')
+                logger.debug('Querying module %r, loader=%r', fullname, loader)
                 return _interrogate_loader(loader, fullname)
             else:
                 if spec.loader is None:
                     raise ValueError('{!r}.loader is not set'.format(spec))
+                logger.debug('Querying module %r (main), spec=%r', spec.name, spec)
                 return _interrogate_loader(spec.loader, spec.name)
 
     try:
         spec = importlib.util.find_spec(fullname)
     except ImportError:
+        logger.debug('Module %r not found', fullname)
         return None
     if spec is None:
+        logger.debug('Module %r not found', fullname)
         return None
     if spec.loader is None:
         # Yet another hack, this time for implicit namespace packages.
         if bool(spec.submodule_search_locations) and not spec.has_location and spec.origin == 'namespace':
+            logger.debug('Querying module %r (namespace), spec=%r', fullname, spec)
             return _RemoteLoader('', True, '<source>')
         raise ValueError('{!r}.loader is not set'.format(spec))
+    logger.debug('Querying module %r, spec=%r', fullname, spec)
     return _interrogate_loader(spec.loader, fullname)
 
 
@@ -199,24 +255,37 @@ class _RemoteLoader(object):
         return self.__source, self.__package, self.__filename, self.__code
 
 
-_minimal_modules = (
+# This list contains 'across' module with all its depenendencies, excluding importer module
+# (which is a different story, because it needs to load itself).
+_core_module_names = (
     'across',
     'across.utils',
     'across.channels',
-    'across._importer',
 )
 
 
 def get_bootstrap_line(func, *args):
-    data = {}
-    for fullname in _minimal_modules:
-        loader = _get_remote_loader(fullname)
+    own_loader = _get_remote_loader(__name__)
+    if own_loader is None:
+        raise ImportError('{} not found'.format(__name__))
+
+    loaders = {}
+    for module_name in _core_module_names:
+        loader = _get_remote_loader(module_name)
         if loader is None:
-            raise ImportError('{} not found'.format(fullname))
-        data[fullname] = loader.deconstruct()
-    data[None] = pickle.dumps((func, args), protocol=3)
-    return ("__across_vars={!r},{!r},{{}};exec(__across_vars[0][__across_vars[1]][0],__across_vars[2]);"
-            "__across_vars[2]['_bootstrap'](__across_vars[0],__across_vars[1])(ACROSS)\n".format(data, __name__))
+            raise ImportError('{} not found'.format(module_name))
+        loaders[module_name] = loader.deconstruct()
+
+    data = {
+        'own_loader': own_loader.deconstruct(),
+        'ns': {'__name__': __name__},
+        'loaders': loaders,
+        'debug_level': get_debug_level(),
+        'func_with_args': pickle.dumps((func, args), protocol=3),
+    }
+
+    return ("__across_boot={!r};exec(__across_boot['own_loader'][0],__across_boot['ns']);"
+            "__across_boot=__across_boot['ns']['_bootstrap'](__across_boot);__across_boot(ACROSS)\n".format(data))
 
 
 def _module_from_spec(spec):
@@ -242,27 +311,47 @@ def take_finder():
     return finder
 
 
-def _bootstrap(data, name):
-    if name in sys.modules:
-        raise RuntimeError('{} already in sys.modules'.format(name))
+def _bootstrap(data):
+    # Enable debug mode inside bootloader as soon as possible.
+    debug_level = data['debug_level']
+    set_debug_level(debug_level)
 
-    pickled_func_args = data.pop(None)
-    tmp_loader = _RemoteLoader(*data[name])
-    spec = importlib.util.spec_from_loader(name, tmp_loader)
-    module = _module_from_spec(spec)
+    logger.debug('Bootloader starts, python=%r', sys.version)
 
-    sys.modules[name] = module
-    tmp_loader.exec_module(module)
+    # The environment in which we are currently running code is not a proper Python module: __file__/__package__
+    # are not set, there is no entry in sys.modules, etc. First step is to create our own module.
+    if __name__ in sys.modules:
+        raise RuntimeError('{} already in sys.modules'.format(__name__))
+    # Beware: _RemoteLoader.__module__ is invalid. We will have to recreate loader object later.
+    tmp_loader = _RemoteLoader(*data['own_loader'])
+    own_spec = importlib.util.spec_from_loader(__name__, tmp_loader)
+    own_module = sys.modules[__name__] = _module_from_spec(own_spec)
+    tmp_loader.exec_module(own_module)
+
+    # Our own module is ready now. We should stop using current globals and switch to the ones from 'own_module'.
+    # Start with switching debug mode.
+    set_debug_level(0)
+    own_module.set_debug_level(debug_level)
+
+    # Recreate our own loader.
+    own_loader = own_module.__loader__ = own_spec.loader = own_module._RemoteLoader(*tmp_loader.deconstruct())
+
+    # The most tricky part is behind us. Now let's create a finder object for loading remaining modules.
     loaders = dict(
-        (fullname, module._RemoteLoader(*args))
-        for fullname, args in data.items()
-        if fullname != name
+        (module_name, own_module._RemoteLoader(*args))
+        for module_name, args in data['loaders'].items()
     )
-    module.__loader__ = spec.loader = loaders[name] = module._RemoteLoader(*tmp_loader.deconstruct())
-    finder = module._RemoteFinder(loaders)
+    loaders[__name__] = own_loader
+    finder = own_module._RemoteFinder(loaders)
+
+    # Install finder.
     sys.meta_path.insert(0, finder)
+    own_module._finder = finder
 
-    module._finder = finder
+    # Now we can finally load startup function that takes care of creating Connection object.
+    func, args = pickle.loads(data['func_with_args'])
+    func_with_args = functools.partial(func, *args)
 
-    func, args = pickle.loads(pickled_func_args)
-    return functools.partial(func, *args)
+    logger.debug('Bootloader ends')
+
+    return func_with_args

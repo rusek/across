@@ -4,7 +4,7 @@ import subprocess
 import sys
 import os.path
 
-from .utils import ignore_exception_at
+from .utils import ignore_exception_at, logger as _logger, get_debug_level, set_debug_level
 from . import _get_bios_superblock
 import across.channels
 
@@ -70,19 +70,19 @@ _serve_arg = '_serve'
 
 
 class ProcessConnectionHandler(ConnectionHandler):
-    _args = [sys.executable, '-m', __name__, _serve_arg]
-
     def __init__(self):
-        self.__procs = set()
+        self._procs = set()
 
     def handle_socket(self, sock):
-        self.__procs.add(self.__create_proc(sock))
-        self.__collect_procs()
+        proc = self._create_proc(sock)
+        _logger.debug('Started child process, pid=%r', proc.pid)
+        self._procs.add(proc)
+        self._collect_procs()
 
     if _windows:
-        def __create_proc(self, sock):
+        def _create_proc(self, sock):
             proc = subprocess.Popen(
-                self._args,
+                self._get_base_args(),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.DEVNULL,
             )
@@ -91,29 +91,36 @@ class ProcessConnectionHandler(ConnectionHandler):
             sock.close()
             return proc
     else:
-        def __create_proc(self, sock):
+        def _create_proc(self, sock):
             proc = subprocess.Popen(
-                self._args + [str(int(sock.family))],
+                self._get_base_args() + [str(int(sock.family))],
                 stdin=sock.fileno(),
                 stdout=subprocess.DEVNULL,
             )
             sock.close()
             return proc
 
-    def __collect_procs(self):
-        for proc in self.__procs.copy():
+    def _collect_procs(self):
+        for proc in self._procs.copy():
             if proc.poll() is not None:
-                self.__procs.remove(proc)
+                _logger.debug('Joined process %r', proc.pid)
+                self._procs.remove(proc)
+
+    def _get_base_args(self):
+        return [sys.executable, '-m', __name__, _serve_arg, str(get_debug_level())]
 
     def close(self):
-        for proc in self.__procs:
+        for proc in self._procs:
             if proc.poll() is None:
+                _logger.debug('Killing process %r', proc.pid)
                 try:
                     proc.terminate()
                 except OSError:  # process already terminated
                     pass
-        for proc in self.__procs:
+        for proc in self._procs:
+            _logger.debug('Joining process %r', proc.pid)
             proc.wait()
+            _logger.debug('Process joined')
 
 
 if _windows:
@@ -141,7 +148,8 @@ exec(recvall(struct.unpack('>I', recvall(20)[-4:])[0]))
 
 
 class BootstrappingConnectionHandler(ProcessConnectionHandler):
-    _args = [sys.executable, '-c', _socket_bios]
+    def _get_base_args(self):
+        return [sys.executable, '-c', _socket_bios]
 
 
 def _tune_server_socket(sock):
@@ -158,12 +166,15 @@ def _run_server(family, address, handler):
     sock = _open_socket(family)
     _tune_server_socket(sock)
     sock.bind(address)
+    _logger.info('Listening on %r', address)
     sock.listen(socket.SOMAXCONN)
     try:
         while True:
-            handler.handle_socket(sock.accept()[0])
+            client_sock, client_addr = sock.accept()
+            _logger.info('Accepted connection from %r', client_addr)
+            handler.handle_socket(client_sock)
     except KeyboardInterrupt:
-        pass
+        _logger.info('Received interrupt')
     sock.close()
     handler.close()
 
@@ -191,10 +202,11 @@ def main():
     if len(sys.argv) < 2 or sys.argv[1] != _serve_arg:
         return
 
+    set_debug_level(int(sys.argv[2]))
     if _windows:
         sock = socket.fromshare(sys.stdin.buffer.read())
     else:
-        family = int(sys.argv[2])
+        family = int(sys.argv[3])
         sock = socket.fromfd(0, family, socket.SOCK_STREAM)
         devnull_fd = os.open(os.devnull, os.O_RDONLY)
         os.dup2(devnull_fd, 0)

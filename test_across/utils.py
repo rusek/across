@@ -182,7 +182,7 @@ class StderrCollector:
         sys.stderr = self.__orig_stderr
 
 
-def call_process(func, *args, **kwargs):
+def _call_process(func, args, kwargs, **popen_args):
     process = subprocess.Popen(
         [sys.executable, '-c', """
 import pickle, sys
@@ -194,17 +194,24 @@ except Exception as exc:
 pickle.dump(result, sys.stdout.buffer)"""],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
+        **popen_args,
     )
-    pickle.dump((func, args, kwargs), process.stdin)
-    process.stdin.flush()
-    success, value = pickle.load(process.stdout)
-    process.stdin.close()
-    process.stdout.close()
-    process.wait()
+    stdout, stderr = process.communicate(pickle.dumps((func, args, kwargs)))
+    if stderr is not None:
+        stderr = stderr.decode()
+    success, value = pickle.loads(stdout)
     if success:
-        return value
+        return value, stderr
     else:
         raise value
+
+
+def call_process(func, *args, **kwargs):
+    return _call_process(func, args, kwargs)[0]
+
+
+def call_process_with_stderr(func, *args, **kwargs):
+    return _call_process(func, args, kwargs, stderr=subprocess.PIPE)
 
 
 _tmpdir = None
@@ -252,6 +259,9 @@ class PackageTestLoader:
             suite.addTests(loader.loadTestsFromModule(mod))
         return suite
 
+
+# Printed by logging module to stderr when internal error occurs.
+logging_error_marker = '--- Logging error ---'
 
 localhost = '127.0.0.1'
 localhost_ipv6 = '::1'

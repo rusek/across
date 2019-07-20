@@ -15,7 +15,9 @@ import copy
 import errno
 
 from ._importer import get_bootstrap_line, take_finder
-from .utils import ignore_exception_at, Executor, Future, SimpleQueue, format_exception_only
+from .utils import (
+    ignore_exception_at, Executor, Future, SimpleQueue, format_exception_only, logger as _logger,
+    IdentityAdapter, atomic_count, set_debug_level)
 from .channels import PipeChannel, SocketChannel, ProcessChannel
 
 
@@ -161,8 +163,9 @@ _SenderQueue = SimpleQueue  # patched by tests
 
 
 class _SenderThread(threading.Thread):
-    def __init__(self, framer, cancel_func):
+    def __init__(self, framer, cancel_func, logger):
         super(_SenderThread, self).__init__(daemon=True)
+        self.__logger = logger
         self.__framer = framer
         self.__cancel_func = cancel_func
         self.__queue = _SenderQueue()
@@ -181,6 +184,7 @@ class _SenderThread(threading.Thread):
             self.__cancel_func(error)
 
     def __idle(self):
+        self.__logger.debug('Sending idle frame')
         msg = _Message()
         msg.put_uint(_IDLE)
         self.__framer.send_frame(msg.as_bytes())
@@ -245,29 +249,6 @@ def _get_greeting_frame(timeout_ms):
     return msg.as_bytes()
 
 
-class Options:
-    def __init__(self, **options):
-        self.timeout = _DEFAULT_TIMEOUT
-
-        self._ready = None
-        self._assign(options)
-
-    def copy(self, **options):
-        other = copy.copy(self)
-        other._assign(options)
-        return other
-
-    def _assign(self, options):
-        for name, value in options.items():
-            setattr(self, name, value)
-
-    # Let's be nice enough to detect typos when setting options (e.g. 'timout')
-    def __setattr__(self, name, value):
-        if not hasattr(self, name) and hasattr(self, '_ready'):
-            raise AttributeError('No option named \'{}\''.format(name))
-        super().__setattr__(name, value)
-
-
 # timeout (in ms) is transmitted as uint64; these limits help avoiding internal
 # errors when too small/large value is given; note that 1ms timeout will probably
 # sooner or later cause a connection loss; we also have to ensure that system limits
@@ -289,7 +270,43 @@ def _sanitize_timeout(timeout):
     return max(_MIN_TIMEOUT, min(_MAX_TIMEOUT, timeout))
 
 
+class Options:
+    _check_mode = False
+
+    def __init__(self, **options):
+        self.timeout = _DEFAULT_TIMEOUT
+
+        self._assign(options)
+
+    def copy(self, **options):
+        other = copy.copy(self)
+        other._assign(options)
+        return other
+
+    def _assign(self, options):
+        for name, value in options.items():
+            setattr(self, name, value)
+
+    # Let's be nice enough to detect typos when setting options (e.g. 'timout')
+    def __setattr__(self, name, value):
+        if Options._check_mode and not hasattr(_default_options, name):
+            raise AttributeError('No option named \'{}\''.format(name))
+        super().__setattr__(name, value)
+
+    def __repr__(self):
+        options = []
+        for option, value in sorted(self.__dict__.items()):
+            if value != getattr(_default_options, option):
+                options.append('{}={!r}'.format(option, value))
+        return '{}({})'.format(self.__class__.__name__, ', '.join(options))
+
+
+_default_options = Options()
+Options._check_mode = True
+
+
 _unclosed_connections = set()
+_connection_counter = atomic_count(1)
 
 # Receiver thread establishes connection / performs handshake. Thre is no error (Connection.__cancel_error is None).
 # Sending data is allowed only from receiver thread.
@@ -307,9 +324,9 @@ _CLOSED = 4
 
 
 class Connection:
-    def __init__(self, channel, *, options=None, on_stopped=None):
+    def __init__(self, channel, *, options=None, on_stopped=None, logger=_logger):
         if options is None:
-            options = Options()
+            options = _default_options
         timeout = _sanitize_timeout(options.timeout)
         if timeout is not None:
             channel.set_timeout(timeout)
@@ -321,11 +338,12 @@ class Connection:
         if finder:
             finder.set_connection(self)
 
+        self.__logger = logger
         self.__channel = channel
         self.__timeout_ms = timeout_ms
         self.__framer = _Framer(channel)
         self.__lock = threading.Lock()
-        self.__sender = _SenderThread(self.__framer, cancel_func=self.__cancel)
+        self.__sender = _SenderThread(self.__framer, logger=self.__logger, cancel_func=self.__cancel)
         self.__receiver_thread = threading.Thread(target=self.__receiver_loop, daemon=True)
         self.__state_condition = threading.Condition(self.__lock)
         self.__cancel_error = None
@@ -342,46 +360,72 @@ class Connection:
         self.__objs = {}
         self.__obj_counter = 0
 
-        self.__receiver_thread.start()
         self._finder = finder
 
         _unclosed_connections.add(self)
 
+        self.__logger.info('Connection starts, channel=%r, options=%r', channel, options)
+        self.__receiver_thread.start()
+
+    @classmethod
+    def _make_logger(cls):
+        return IdentityAdapter(_logger, 'conn/{}'.format(next(_connection_counter)))
+
     @classmethod
     def from_tcp(cls, host, port, **kwargs):
-        return cls(SocketChannel(family=socket.AF_UNSPEC, address=(host, port), resolve=True), **kwargs)
+        logger = cls._make_logger()
+        return cls(
+            SocketChannel(family=socket.AF_UNSPEC, address=(host, port), resolve=True, logger=logger),
+            logger=logger,
+            **kwargs
+        )
 
     @classmethod
     def from_unix(cls, path, **kwargs):
         if not hasattr(socket, 'AF_UNIX'):
             raise RuntimeError('Unix domain sockets are not available')
-        return cls(SocketChannel(family=socket.AF_UNIX, address=path), **kwargs)
+        logger = cls._make_logger()
+        return cls(
+            SocketChannel(family=socket.AF_UNIX, address=path, logger=logger),
+            logger=logger,
+            **kwargs
+        )
 
     @classmethod
     def from_socket(cls, sock, **kwargs):
-        return cls(SocketChannel(sock=sock), **kwargs)
+        logger = cls._make_logger()
+        return cls(SocketChannel(sock=sock, logger=logger), logger=logger, **kwargs)
 
     @classmethod
     def from_pipes(cls, in_pipe, out_pipe, **kwargs):
-        return cls(PipeChannel(in_pipe, out_pipe, close=True), **kwargs)
+        logger = cls._make_logger()
+        return cls(PipeChannel(in_pipe, out_pipe, close=True, logger=logger), logger=logger, **kwargs)
 
     @classmethod
     def from_stdio(cls, **kwargs):
-        return cls(PipeChannel(sys.stdin.buffer, sys.stdout.buffer, close=False), **kwargs)
+        logger = cls._make_logger()
+        return cls(
+            PipeChannel(sys.stdin.buffer, sys.stdout.buffer, close=False, logger=logger),
+            logger=logger,
+            **kwargs
+        )
 
     @classmethod
     def from_command(cls, args, **kwargs):
         assert isinstance(args, (list, tuple))
-        return cls(ProcessChannel(args), **kwargs)
+        logger = cls._make_logger()
+        return cls(ProcessChannel(args, logger=logger), logger=logger, **kwargs)
 
     @classmethod
     def from_shell(cls, script, **kwargs):
         assert isinstance(script, (str, bytes))
-        return cls(ProcessChannel(script, shell=True), **kwargs)
+        logger = cls._make_logger()
+        return cls(ProcessChannel(script, shell=True, logger=logger), logger=logger, **kwargs)
 
     @classmethod
     def from_process(cls, proc, **kwargs):
-        return cls(ProcessChannel(proc=proc), **kwargs)
+        logger = cls._make_logger()
+        return cls(ProcessChannel(proc=proc, logger=logger), logger=logger, **kwargs)
 
     def _get_obj(self, id):
         return self.__objs[id]
@@ -432,6 +476,7 @@ class Connection:
             self.__state = _CLOSED
             _unclosed_connections.remove(self)
             self.__receiver_thread.join()
+            self.__logger.info('Connection closed')
             if self.__cancel_error is not None:
                 try:
                     raise self.__cancel_error
@@ -439,11 +484,16 @@ class Connection:
                     self.__cancel_error = None
 
     def cancel(self):
-        self.__cancel(OSError(errno.ECANCELED, os.strerror(errno.ECANCELED)))
+        self.__cancel(None)
 
     def __cancel(self, error):
         with self.__lock:
             if self.__cancel_error is None and self.__state not in (_STOPPED, _CLOSED):
+                if error is None:
+                    self.__logger.info('Cancelling connection')
+                    error = OSError(errno.ECANCELED, os.strerror(errno.ECANCELED))
+                else:
+                    self.__logger.error('Aborting connection due to %r', error)
                 self.__cancel_error = error
                 self.__set_stopping_locked()
                 try:
@@ -456,6 +506,7 @@ class Connection:
             self.__state = _STOPPING
             self.__state_condition.notify_all()
             if self.__cancel_error is None:
+                self.__logger.info('Stopping connection')
                 msg = _Message()
                 msg.put_uint(_GOODBYE)
                 self.__sender.send_frame_and_stop(msg.as_bytes())
@@ -569,6 +620,7 @@ class Connection:
             self.__executor.close()
 
         with self.__lock:
+            self.__logger.info('Connection stopped')
             self.__state = _STOPPED
             self.__state_condition.notify_all()
 
@@ -580,6 +632,7 @@ class Connection:
             superblock = self.__framer.recv_superblock(_SUPERBLOCK_SIZE)
             magic, major, minor, patch = struct.unpack_from('>IBBB', superblock)
             if magic == _MAGIC:
+                self.__logger.debug('Remote across version is %s.%s.%s', major, minor, patch)
                 if (major, minor) != _version[:2]:
                     raise ProtocolError('Local across {} is not compatible with remote {}.{}.{}'.format(
                         __version__, major, minor, patch
@@ -587,6 +640,7 @@ class Connection:
                 self.__sender.send_frame(_get_greeting_frame(self.__timeout_ms))
                 break
             elif magic == _BIOS_MAGIC:
+                self.__logger.debug('Bootrapping needed with version at least %s.%s.%s', major, minor, patch)
                 if (major, minor, patch) > _version:
                     raise ProtocolError('At least across {}.{}.{} is needed to bootstrap connection'.format(
                         major, minor, patch
@@ -622,6 +676,7 @@ class Connection:
         else:
             idle_timeout = None
 
+        self.__logger.info('Connection is running, idle_timeout=%r', idle_timeout)
         self.__sender.update_idle_timeout(idle_timeout)
         self.__handlers_locked = self.__ready_handlers_locked
         self.__state = _RUNNING
@@ -697,7 +752,7 @@ class Connection:
         return False
 
     def __handle_idle_locked(self, msg):
-        pass
+        self.__logger.debug('Received idle frame')
 
     __ready_handlers_locked = {
         _APPLY: __handle_apply_locked,
@@ -749,6 +804,7 @@ atexit.register(_shutdown)
 
 # Start a remotely bootstrapped connection. 'args' is the value of 'ACROSS' variable set by BIOS scripts.
 def _start(options, args):
+    _logger.debug('Creating bootstrapped connection, options=%s, args=%s', options, args)
     if args[0] == 'stdio':
         conn = Connection.from_stdio(options=options)
     elif args[0] == 'socket':
@@ -971,3 +1027,7 @@ def get_connection():
     if conn is None:
         raise ValueError('Current thread is not associated with any connection')
     return conn
+
+
+# Export
+set_debug_level = set_debug_level

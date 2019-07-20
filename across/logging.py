@@ -1,7 +1,10 @@
 import logging
+
 from . import get_connection, DisconnectError
+from .utils import logger as _across_logger
 
 
+_across_logger_name = _across_logger.name
 _default_formatter = logging.Formatter()
 
 
@@ -14,6 +17,9 @@ class AcrossHandler(logging.Handler):
 
     def emit(self, record):
         try:
+            if record.name == _across_logger_name:
+                return
+
             # there are a few things that need to be done before serializing record:
             #   - args may not be pickleable, so we need to format message locally;
             #   - tracebacks are not pickleable, so we need to format exception locally;
