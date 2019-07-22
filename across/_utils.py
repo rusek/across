@@ -97,6 +97,7 @@ class Executor:
         while True:
             try:
                 func(*args)
+            # All exceptions from threading.Thread.run() method are ignored, here we emulate that behavior.
             except BaseException:
                 ignore_exception_at(func)
 
@@ -137,7 +138,7 @@ def ignore_exception_at(obj):
     try:
         print('Exception ignored in: {!r}'.format(obj), file=sys.stderr)
         traceback.print_exc()
-    except BaseException:
+    except OSError:
         pass
 
 

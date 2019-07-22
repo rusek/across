@@ -39,7 +39,8 @@ class LocalConnectionHandler(ConnectionHandler):
         self.__unclosed_conns.remove(self.__stopped_conn)
         try:
             self.__stopped_conn.close()
-        except BaseException:
+        # Connection.close() may raise all different exception types.
+        except Exception:
             # Ignore exceptions after cancelling connections
             if not self.__closing:
                 ignore_exception_at(self.__stopped_conn.close)

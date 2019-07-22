@@ -1,6 +1,7 @@
 import unittest
 import pickle
 import traceback
+import copy
 
 import across
 
@@ -37,6 +38,13 @@ class ExceptionTest(unittest.TestCase):
             raise ValueError
         with make_connection() as conn:
             with self.assertRaises(ValueError):
+                conn.call(Box(func))
+
+    def test_base_exception(self):
+        def func():
+            raise SystemExit(1)
+        with make_connection() as conn:
+            with self.assertRaises(SystemExit):
                 conn.call(Box(func))
 
     # self.assertRaises may modify exception object (e.g. clear traceback)
@@ -238,8 +246,13 @@ class PicklingTestError(Exception):  # test error raised during pickling/unpickl
 
 
 class BrokenPickle(object):
+    def __init__(self, exc=None):
+        if exc is None:
+            exc = PicklingTestError('{} is not pickleable'.format(self.__class__.__name__))
+        self._exc = exc
+
     def __reduce__(self):
-        raise PicklingTestError('{} is not pickleable'.format(self.__class__.__name__))
+        raise copy.deepcopy(self._exc)
 
 
 class BrokenPickleError(BrokenPickle, Exception):
@@ -255,13 +268,18 @@ class RecursivelyBrokenPickleError(RecursivelyBrokenPickle, Exception):
     pass
 
 
-def _reduce_broken_unpickle(cls):
-    raise PicklingTestError('{} is not unpickleable'.format(cls.__name__))
+def _reduce_broken_unpickle(exc_box):
+    raise copy.deepcopy(exc_box.value)
 
 
 class BrokenUnpickle(object):
+    def __init__(self, exc=None):
+        if exc is None:
+            exc = PicklingTestError('{} is not unpickleable'.format(self.__class__.__name__))
+        self._exc = exc
+
     def __reduce__(self):
-        return _reduce_broken_unpickle, (self.__class__, )
+        return _reduce_broken_unpickle, (Box(self._exc), )
 
 
 class BrokenUnpickleError(BrokenUnpickle, Exception):
@@ -282,6 +300,11 @@ class PicklingExceptionTest(unittest.TestCase):
             self.assertIsInstance(context.exception.__cause__, PicklingTestError)
             self.assertEqual(conn.call(get_magic), magic)
 
+    def test_pickle_interrupt_in_call(self):
+        with make_connection() as conn:
+            with self.assertRaises(KeyboardInterrupt):
+                conn.call(BrokenPickle(KeyboardInterrupt()))
+
     def test_pickle_error_in_call_result(self):
         def func():
             return BrokenPickle()
@@ -301,7 +324,7 @@ class PicklingExceptionTest(unittest.TestCase):
                 conn.call(Box(func))
             self.assertEqual(conn.call(get_magic), magic)
 
-    def test_pickle_error_call_error(self):
+    def test_pickle_error_in_call_error(self):
         def func():
             raise BrokenPickleError()
 
@@ -337,3 +360,11 @@ class PicklingExceptionTest(unittest.TestCase):
                 conn.call(Box(func))
             self.assertIsInstance(context.exception.__cause__, PicklingTestError)
             self.assertEqual(conn.call(get_magic), magic)
+
+    def test_unpickle_interrupt_in_call_result(self):
+        def func():
+            return BrokenUnpickle(KeyboardInterrupt())
+
+        with make_connection() as conn:
+            with self.assertRaises(KeyboardInterrupt):
+                conn.call(Box(func))
