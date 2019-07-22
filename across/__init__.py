@@ -151,7 +151,7 @@ class _ConnScope(object):
         self.__proxy_ids = proxy_ids
 
     def __enter__(self):
-        _conn_tls.conn, self.__conn = self.__conn,  _conn_tls.conn
+        _conn_tls.conn, self.__conn = self.__conn, _conn_tls.conn
         _conn_tls.proxy_ids, self.__proxy_ids = self.__proxy_ids, _conn_tls.proxy_ids
 
     def __exit__(self, exc_type, exc_val, exc_tb):
@@ -536,7 +536,7 @@ class Connection:
             msg.put_uint(_APPLY)
             msg.put_uint(call_id)
             _self.__serialize(msg, (_func, args, kwargs))
-        except BaseException:
+        except:
             with _self.__lock:
                 # May be already deleted if connection entered stopping state
                 _self.__calls.pop(call_id, None)
