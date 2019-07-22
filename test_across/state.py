@@ -156,6 +156,7 @@ class DisconnectErrorTest(unittest.TestCase):
     def test_connect_exception(self):
         chan = FailingChannel()
         chan.connect_future.set_exception(FirstError())
+        chan.close_future.set_result(None)
         with self.assertRaises(FirstError):
             with Connection(chan):
                 pass

@@ -345,14 +345,8 @@ class SocketChannel(Channel):
                 last_error = None
 
     def connect(self):
-        try:
-            if self.__address:
-                self.__connect_loop()
-        except BaseException:
-            self.__poller.close()
-            if self.__sock:
-                self.__sock.close()
-            raise
+        if self.__address:
+            self.__connect_loop()
 
     def send(self, buffer):
         self.__poller.wait_send()
@@ -367,7 +361,8 @@ class SocketChannel(Channel):
 
     def close(self):
         self.__poller.close()
-        self.__sock.close()
+        if self.__sock is not None:
+            self.__sock.close()
 
     def __repr__(self):
         return '<{} {!r}>'.format(self.__class__.__name__, self.__sock or self.__address)

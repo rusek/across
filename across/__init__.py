@@ -612,12 +612,12 @@ class Connection:
 
             self.__sender.join()
 
-            try:
-                self.__channel.close()
-            except Exception as error:
-                self.__cancel(error)
+        try:
+            self.__channel.close()
+        except Exception as error:
+            self.__cancel(error)
 
-            self.__executor.close()
+        self.__executor.close()
 
         with self.__lock:
             self.__logger.info('Connection stopped')

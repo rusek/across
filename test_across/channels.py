@@ -117,6 +117,10 @@ class ChannelTest(unittest.TestCase):
             self.verify_exception(exc)
         else:
             self.fail('Exception not raised')
+        try:
+            chan.close()
+        except Exception as exc:
+            self.verify_exception(exc)
         server.close()
 
     def test_graceful_close(self):
@@ -209,6 +213,10 @@ class ChannelTest(unittest.TestCase):
             self.verify_exception(exc)
         else:
             self.fail('Exception not raised')
+        try:
+            chan.close()
+        except Exception as exc:
+            self.verify_exception(exc)
         server.close()
 
     def test_cancel_before_close(self):
