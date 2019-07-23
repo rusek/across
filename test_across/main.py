@@ -5,10 +5,12 @@ import socket
 import os
 import time
 import signal
+import argparse
 
 import across
+from across.__main__ import _parse_tcp
 
-from .utils import par, mktemp, localhost, skip_if_no_unix_sockets
+from .utils import par, mktemp, localhost, localhost_ipv6, anyaddr, skip_if_no_unix_sockets
 
 
 def spawn_main(args, **popen_extras):
@@ -34,6 +36,42 @@ def serve(sock):
         conn.wait()
 
 
+class ParserTest(unittest.TestCase):
+    def test_parse_tcp(self):
+        for text, address in [
+            ('wonderland:1865', ('wonderland', 1865)),
+            ('wonderland:0', ('wonderland', 0)),
+            ('127.0.0.1:65535', ('127.0.0.1', 65535)),
+            ('[::1]:20', ('::1', 20)),
+            ('[::ffff:192.0.2.128]:20', ('::ffff:192.0.2.128', 20)),
+        ]:
+            self.assertEqual(_parse_tcp(text), ('tcp',) + address)
+
+        for text in [
+            'bad',
+            '20',
+            'bad:-20',
+            'bad:100000',
+            '[bad]:20',
+            '[bad.bad]:20',
+            '::1:20',
+            '[[::1]:20',
+            '[]::1]:20',
+            'ba[d:20',
+            'ba]d:20',
+        ]:
+            self.assertRaises(argparse.ArgumentTypeError, _parse_tcp, text)
+
+
+# Note that tests using this function have a race condition :(
+def _random_port():
+    sock = socket.socket()
+    sock.bind((anyaddr, 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    return port
+
+
 class MainTest(unittest.TestCase):
     def test_version(self):
         rc, out = run_main(['--version'])
@@ -56,6 +94,30 @@ class MainTest(unittest.TestCase):
         sock.close()
         self.assertEqual(rc, 0)
         self.assertEqual(int(out.strip()), os.getpid())
+
+    def test_tcp_server(self):
+        self._run_tcp_server_test(socket.AF_INET)
+
+    def test_tcp_server_ipv6(self):
+        self._run_tcp_server_test(socket.AF_INET6)
+
+    def _run_tcp_server_test(self, family):
+        if family == socket.AF_INET6:
+            host = localhost_ipv6
+            escaped_host = '[{}]'.format(host)
+        else:
+            host = escaped_host = localhost
+        port = _random_port()
+        process = spawn_main(['--server', '--tcp', '{}:{}'.format(escaped_host, port)])
+        sock = socket.socket(family)
+        while sock.connect_ex((host, port)) != 0:
+            time.sleep(0.01)
+            self.assertIsNone(process.poll())
+        os.kill(process.pid, signal.SIGINT)
+        process.wait()
+        sock.close()
+        process.stdin.close()
+        process.stdout.close()
 
     def test_bad_usage(self):
         args_list = [

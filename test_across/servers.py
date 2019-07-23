@@ -11,7 +11,7 @@ from across.servers import (
 from across._utils import get_debug_level
 
 from .utils import (
-    mktemp, localhost, localhost_ipv6, windows, skip_if_no_unix_sockets, call_process_with_stderr,
+    mktemp, localhost, localhost_ipv6, anyaddr_ipv6, windows, skip_if_no_unix_sockets, call_process_with_stderr,
     logging_error_marker)
 
 
@@ -134,6 +134,11 @@ class ServerTest(unittest.TestCase):
     def test_tcp_ipv6(self):
         with ServerWorker(run_tcp, localhost_ipv6, 0) as worker:
             with Connection.from_tcp(*worker.address[:2]) as conn:
+                self.assertEqual(conn.call(add, 1, 2), 3)
+
+    def test_tcp_dual_stack(self):
+        with ServerWorker(run_tcp, anyaddr_ipv6, 0) as worker:
+            with Connection.from_tcp(localhost, worker.address[1]) as conn:
                 self.assertEqual(conn.call(add, 1, 2), 3)
 
     def test_multiple_connections(self):

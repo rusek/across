@@ -154,6 +154,8 @@ class BootstrappingConnectionHandler(ProcessConnectionHandler):
 def _tune_server_socket(sock):
     if sock.family in (socket.AF_INET, socket.AF_INET6):
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    if sock.family == socket.AF_INET6:
+        sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
 
 
 _open_socket = socket.socket  # patched by tests

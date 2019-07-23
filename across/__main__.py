@@ -77,12 +77,17 @@ def _parse_args():
 
 def _parse_tcp(arg):
     try:
-        if arg.count(':') != 1:
+        host, sep, port = arg.rpartition(':')
+        if ':' in host:  # IPv6 address, needs to be enclosed in []
+            if not host.startswith('[') or not host.endswith(']'):
+                raise ValueError
+            host = host[1: -1]
+        port = int(port)
+        if '[' in host or ']' in host or not sep or not 0 <= port <= 65535:
             raise ValueError
-        host, port = arg.rsplit(':', 1)
-        return 'tcp', host, int(port)
+        return 'tcp', host, port
     except ValueError:
-        raise argparse.ArgumentTypeError('invalid value: {!r}'.format(arg))
+        raise argparse.ArgumentTypeError('invalid value: {!r}'.format(arg)) from None
 
 
 def _handle_args(args):

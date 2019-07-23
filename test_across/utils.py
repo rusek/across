@@ -266,6 +266,9 @@ logging_error_marker = '--- Logging error ---'
 localhost = '127.0.0.1'
 localhost_ipv6 = '::1'
 
+anyaddr = '0.0.0.0'
+anyaddr_ipv6 = '::'
+
 windows = sys.platform == 'win32'
 
 skip_if_no_unix_sockets = unittest.skipUnless(hasattr(socket, 'AF_UNIX'), 'Unix domain sockets are not available')
