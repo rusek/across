@@ -4,27 +4,34 @@ import select
 import unittest.mock
 import traceback
 import os
+import time
+import atexit
 
-from across import Connection, DisconnectError, set_debug_level
+from across import Connection, DisconnectError, set_debug_level, Options
 from across.servers import (
-    run_tcp, run_unix, LocalConnectionHandler, ProcessConnectionHandler, BootstrappingConnectionHandler)
+    run_tcp, run_unix, LocalConnectionHandler, ProcessConnectionHandler, BIOSConnectionHandler)
 from across._utils import get_debug_level
 
 from .utils import (
     mktemp, localhost, localhost_ipv6, anyaddr_ipv6, windows, skip_if_no_unix_sockets, call_process_with_stderr,
-    logging_error_marker)
+    logging_error_marker, InheritableStderrCollector)
+
+
+def make_tcp_socket_pair():
+    server = socket.socket()
+    server.bind((localhost, 0))
+    server.listen(1)
+    first_socket = socket.socket()
+    first_socket.connect(server.getsockname())
+    second_socket = server.accept()[0]
+    server.close()
+    return first_socket, second_socket
 
 
 if windows:
     class Interrupter:
         def __init__(self):
-            server = socket.socket()
-            server.bind(('127.0.0.1', 0))
-            server.listen(1)
-            self.__in_pipe = socket.socket()
-            self.__in_pipe.connect(server.getsockname())
-            self.__out_pipe  = server.accept()[0]
-            server.close()
+            self.__in_pipe, self.__out_pipe = make_tcp_socket_pair()
 
         def fileno(self):
             return self.__in_pipe.fileno()
@@ -125,6 +132,102 @@ def add(left, right):
     return left + right
 
 
+class ConnectionHandlerTest(unittest.TestCase):
+    def make_handler(self, **kwargs):
+        raise NotImplementedError
+
+    def make_connection(self, handler):
+        sock1, sock2 = make_tcp_socket_pair()
+        conn = Connection.from_socket(sock1)
+        handler.handle_socket(sock2)
+        return conn
+
+    def make_handler_and_connection(self):
+        handler = self.make_handler()
+        conn = self.make_connection(handler)
+        return handler, conn
+
+    def test_close_with_running_connection(self):
+        handler, conn = self.make_handler_and_connection()
+        self.assertEqual(conn.call(add, 1, 2), 3)
+        handler.close()
+        conn.close()
+
+    def test_cancel_with_running_connection(self):
+        handler, conn = self.make_handler_and_connection()
+        self.assertEqual(conn.call(add, 1, 2), 3)
+        handler.cancel()
+        handler.close()
+        self.assertRaises(Exception, conn.close)
+
+    def test_handle_after_cancel(self):
+        sock = socket.socket()
+        with self.make_handler() as handler:
+            handler.cancel()
+            self.assertRaises(ValueError, handler.handle_socket, sock)
+        sock.close()
+
+    def test_handle_after_close(self):
+        sock = socket.socket()
+        handler = self.make_handler()
+        handler.close()
+        self.assertRaises(ValueError, handler.handle_socket, sock)
+        sock.close()
+
+    def test_handshake_timeout(self):
+        sock1, sock2 = make_tcp_socket_pair()
+        # In process-based handlers, child process prints timeout exception on stderr.
+        with InheritableStderrCollector():
+            with self.make_handler(options=Options(timeout=0.01)) as handler:
+                handler.handle_socket(sock2)
+                # Wait for other side to close the connection.
+                while sock1.recv(1024) != b'':
+                    pass
+        sock1.close()
+
+
+def hang_on_process_shutdown():
+    def func():
+        while True:
+            try:
+                time.sleep(60)
+            except KeyboardInterrupt:
+                pass
+    atexit.register(func)
+
+
+class ProcessBasedConnectionHandlerTest(ConnectionHandlerTest):
+    @unittest.mock.patch('across.servers._get_process_close_timeout', new=lambda options: 0.01)
+    def test_close_timeout(self):
+        handler, conn = self.make_handler_and_connection()
+        conn.call(hang_on_process_shutdown)
+        handler.close()
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+class LocalConnectionHandlerTest(ConnectionHandlerTest):
+    def make_handler(self, **kwargs):
+        return LocalConnectionHandler(**kwargs)
+
+
+class ProcessConnectionHandlerTest(ProcessBasedConnectionHandlerTest):
+    def make_handler(self, **kwargs):
+        return ProcessConnectionHandler(**kwargs)
+
+
+class BIOSConnectionHandlerTest(ProcessBasedConnectionHandlerTest):
+    def make_handler(self, **kwargs):
+        return BIOSConnectionHandler(**kwargs)
+
+
+# Remove abstract test classes
+del ConnectionHandlerTest
+del ProcessBasedConnectionHandlerTest
+
+
 class ServerTest(unittest.TestCase):
     def test_tcp(self):
         with ServerWorker(run_tcp, localhost, 0) as worker:
@@ -155,17 +258,23 @@ class ServerTest(unittest.TestCase):
 
     def test_process_handler(self):
         handler = ProcessConnectionHandler()
-        with ServerWorker(run_tcp, localhost, 0, handler=handler) as worker:
-            with Connection.from_tcp(*worker.address) as conn:
-                self.assertEqual(conn.call(add, 1, 2), 3)
-                self.assertNotEqual(conn.call(os.getpid), os.getpid())
+        # Child process may be interrupted during interpreter shutdown, causing various errors to be
+        # printed on stderr. Let's suppress them.
+        with InheritableStderrCollector():
+            with ServerWorker(run_tcp, localhost, 0, handler=handler) as worker:
+                with Connection.from_tcp(*worker.address) as conn:
+                    self.assertEqual(conn.call(add, 1, 2), 3)
+                    self.assertNotEqual(conn.call(os.getpid), os.getpid())
 
-    def test_bootstrapping_handler(self):
-        handler = BootstrappingConnectionHandler()
-        with ServerWorker(run_tcp, localhost, 0, handler=handler) as worker:
-            with Connection.from_tcp(*worker.address) as conn:
-                self.assertEqual(conn.call(add, 1, 2), 3)
-                self.assertNotEqual(conn.call(os.getpid), os.getpid())
+    def test_bios_handler(self):
+        handler = BIOSConnectionHandler()
+        # Child process may be interrupted during interpreter shutdown, causing various errors to be
+        # printed on stderr. Let's suppress them.
+        with InheritableStderrCollector():
+            with ServerWorker(run_tcp, localhost, 0, handler=handler) as worker:
+                with Connection.from_tcp(*worker.address) as conn:
+                    self.assertEqual(conn.call(add, 1, 2), 3)
+                    self.assertNotEqual(conn.call(os.getpid), os.getpid())
 
     def test_stopping_server_with_local_handler_and_active_connections(self):
         self.__run_stopping_test(LocalConnectionHandler())
@@ -173,15 +282,15 @@ class ServerTest(unittest.TestCase):
     def test_stopping_server_with_process_handler_and_active_connections(self):
         self.__run_stopping_test(ProcessConnectionHandler())
 
-    def test_stopping_server_with_bootstrapping_handler_and_active_connections(self):
-        self.__run_stopping_test(BootstrappingConnectionHandler())
+    def test_stopping_server_with_bios_handler_and_active_connections(self):
+        self.__run_stopping_test(BIOSConnectionHandler())
 
     def __run_stopping_test(self, handler):
         with ServerWorker(run_tcp, localhost, 0, handler=handler) as worker:
             conn = Connection.from_tcp(*worker.address)
             self.assertEqual(conn.call(add, 1, 2), 3)
         self.assertRaises(DisconnectError, conn.call, add, 1, 2)
-        self.assertRaises(Exception, conn.close)
+        conn.close()
 
 
 @skip_if_no_unix_sockets

@@ -2,10 +2,14 @@ import threading
 import socket
 import subprocess
 import sys
+import pickle
+import base64
 import os.path
+import signal
+import time
 
 from ._utils import ignore_exception_at, logger as _logger, get_debug_level, set_debug_level
-from . import _get_bios_superblock, Connection
+from . import _get_bios_superblock, Connection, _sanitize_options
 
 
 _windows = (sys.platform == 'win32')
@@ -15,64 +19,95 @@ class ConnectionHandler:
     def handle_socket(self, sock):
         raise NotImplementedError
 
+    def cancel(self):
+        raise NotImplementedError
+
     def close(self):
         raise NotImplementedError
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
 
 class LocalConnectionHandler(ConnectionHandler):
-    def __init__(self):
+    def __init__(self, *, options=None):
         self.__lock = threading.Lock()
         self.__unclosed_conns = set()
         self.__stopped_conn = None
-        self.__stopped_conn_condition = threading.Condition(self.__lock)
-        self.__closing = False
+        self.__closed = False
+        self.__cancelled = False
+        self.__options = _sanitize_options(options)
 
     def handle_socket(self, sock):
         with self.__lock:
-            if self.__closing:
-                sock.close()
-                return
-            conn = Connection.from_socket(sock, on_stopped=self.__connection_stopped)
+            if self.__closed:
+                raise ValueError('Connection handler is closed')
+            if self.__cancelled:
+                raise ValueError('Connection handler is cancelled')
+            conn = Connection.from_socket(sock, options=self.__options, on_stopped=self.__connection_stopped)
             self.__unclosed_conns.add(conn)
 
     def __close_stopped_connection_locked(self):
         self.__unclosed_conns.remove(self.__stopped_conn)
-        try:
-            self.__stopped_conn.close()
-        # Connection.close() may raise all different exception types.
-        except Exception:
-            # Ignore exceptions after cancelling connections
-            if not self.__closing:
-                ignore_exception_at(self.__stopped_conn.close)
+        self.__close_conn(self.__stopped_conn)
         self.__stopped_conn = None
 
     def __connection_stopped(self, conn):
         with self.__lock:
+            if self.__closed:
+                return
             if self.__stopped_conn:
                 self.__close_stopped_connection_locked()
             self.__stopped_conn = conn
-            self.__stopped_conn_condition.notify()
+
+    def __close_conn(self, conn):
+        try:
+            conn.close()
+        # Connection.close() may raise all different exception types.
+        except Exception:
+            # Ignore exceptions after cancelling connections
+            if not self.__cancelled:
+                ignore_exception_at(conn.close)
+
+    def cancel(self):
+        with self.__lock:
+            self.__cancelled = True
+            for conn in self.__unclosed_conns:
+                conn.cancel()
 
     def close(self):
         with self.__lock:
-            self.__closing = True
-            for conn in self.__unclosed_conns:
-                conn.cancel()
-            while self.__unclosed_conns:
-                if self.__stopped_conn:
-                    self.__close_stopped_connection_locked()
-                else:
-                    self.__stopped_conn_condition.wait()
+            self.__closed = True
+            if self.__stopped_conn:
+                self.__close_stopped_connection_locked()
+            conns = self.__unclosed_conns
+            self.__unclosed_conns = []
+        for conn in conns:
+            self.__close_conn(conn)
 
 
 _serve_arg = '_serve'
 
 
-class ProcessConnectionHandler(ConnectionHandler):
-    def __init__(self):
+def _get_process_close_timeout(options):  # patched by tests
+    return options.timeout
+
+
+class _ProcessConnectionHandlerBase(ConnectionHandler):
+    def __init__(self, *, options=None):
         self._procs = set()
+        self._cancelled = False
+        self._closed = False
+        self._options = _sanitize_options(options)
 
     def handle_socket(self, sock):
+        if self._closed:
+            raise ValueError('Connection handler is closed')
+        if self._cancelled:
+            raise ValueError('Connection handler is cancelled')
         proc = self._create_proc(sock)
         _logger.debug('Started child process, pid=%r', proc.pid)
         self._procs.add(proc)
@@ -106,20 +141,58 @@ class ProcessConnectionHandler(ConnectionHandler):
                 self._procs.remove(proc)
 
     def _get_base_args(self):
-        return [sys.executable, '-m', __name__, _serve_arg, str(get_debug_level())]
+        raise NotImplementedError
+
+    def _interrupt_proc(self, proc):
+        if self._cancelled:
+            return
+        if proc.poll() is None:
+            _logger.debug('Interrupting process %r', proc.pid)
+            try:
+                proc.send_signal(signal.SIGINT)
+            except OSError:  # process already exited
+                pass
+
+    def _kill_proc(self, proc):
+        if self._cancelled:
+            return
+        if proc.poll() is None:
+            _logger.debug('Killing process %r', proc.pid)
+            try:
+                proc.kill()
+            except OSError:  # process already exited
+                pass
+
+    def _wait_proc(self, proc, timeout):
+        if timeout <= 0.0:
+            return
+        try:
+            proc.wait(timeout)
+        except subprocess.TimeoutExpired:
+            pass
+
+    def cancel(self):
+        for proc in self._procs:
+            self._kill_proc(proc)
+        self._cancelled = True
 
     def close(self):
+        self._closed = True
         for proc in self._procs:
-            if proc.poll() is None:
-                _logger.debug('Killing process %r', proc.pid)
-                try:
-                    proc.terminate()
-                except OSError:  # process already terminated
-                    pass
+            self._interrupt_proc(proc)
+        deadline = time.time() + _get_process_close_timeout(self._options)
         for proc in self._procs:
             _logger.debug('Joining process %r', proc.pid)
+            self._wait_proc(proc, deadline - time.time())
+            self._kill_proc(proc)
             proc.wait()
             _logger.debug('Process joined')
+
+
+class ProcessConnectionHandler(_ProcessConnectionHandlerBase):
+    def _get_base_args(self):
+        data = base64.b64encode(pickle.dumps((get_debug_level(), self._options)))
+        return [sys.executable, '-m', __name__, _serve_arg, data]
 
 
 if _windows:
@@ -128,13 +201,14 @@ sock = socket.fromshare(sys.stdin.buffer.read())
 """
 else:
     _socket_bios = r"""import os,sys,socket
-sock = socket.fromfd(0, int(sys.argv[1]), socket.SOCK_STREAM)
+sock = socket.fromfd(0, int(sys.argv[2]), socket.SOCK_STREAM)
 devnull_fd = os.open(os.devnull, os.O_RDONLY)
 os.dup2(devnull_fd, 0)
 os.close(devnull_fd)
 """
 
 _socket_bios += r"""import struct
+sock.settimeout(float(sys.argv[1]))
 sock.sendall({superblock!r})
 def recvall(size):
     buf = b''
@@ -142,13 +216,16 @@ def recvall(size):
         buf += sock.recv(size - len(buf)) or sys.exit(1)
     return buf
 ACROSS = 'socket', sock
-exec(recvall(struct.unpack('>I', recvall(20)[-4:])[0]))
+try:
+    exec(recvall(struct.unpack('>I', recvall(20)[-4:])[0]))
+except KeyboardInterrupt:
+    raise SystemExit
 """.format(superblock=_get_bios_superblock())
 
 
-class BootstrappingConnectionHandler(ProcessConnectionHandler):
+class BIOSConnectionHandler(_ProcessConnectionHandlerBase):
     def _get_base_args(self):
-        return [sys.executable, '-c', _socket_bios]
+        return [sys.executable, '-c', _socket_bios, str(self._options.timeout)]
 
 
 def _tune_server_socket(sock):
@@ -203,7 +280,8 @@ def main():
     if len(sys.argv) < 2 or sys.argv[1] != _serve_arg:
         return
 
-    set_debug_level(int(sys.argv[2]))
+    debug_level, options = pickle.loads(base64.b64decode(sys.argv[2]))
+    set_debug_level(debug_level)
     if _windows:
         sock = socket.fromshare(sys.stdin.buffer.read())
     else:
@@ -212,8 +290,11 @@ def main():
         devnull_fd = os.open(os.devnull, os.O_RDONLY)
         os.dup2(devnull_fd, 0)
         os.close(devnull_fd)
-    with Connection.from_socket(sock) as conn:
-        conn.wait()
+    try:
+        with Connection.from_socket(sock, options=options) as conn:
+            conn.wait()
+    except KeyboardInterrupt:
+        raise SystemExit
 
 
 if __name__ == '__main__':

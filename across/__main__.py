@@ -1,7 +1,7 @@
 import argparse
 
 from . import __version__, Connection
-from .servers import run_tcp, run_unix, BootstrappingConnectionHandler
+from .servers import run_tcp, run_unix, BIOSConnectionHandler
 from ._utils import set_debug_level
 
 
@@ -99,7 +99,7 @@ def _handle_args(args):
 
 
 def _run_server(args):
-    handler = BootstrappingConnectionHandler()
+    handler = BIOSConnectionHandler()
     if args.address[0] == 'tcp':
         run_tcp(args.address[1], args.address[2], handler=handler)
     elif args.address[0] == 'unix':

@@ -180,6 +180,42 @@ class StderrCollector:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         sys.stderr = self.__orig_stderr
+        if exc_val is not None:
+            sys.stderr.write(self.__stderr.getvalue())
+
+
+class InheritableStderrCollector:
+    def __init__(self):
+        self._orig_stderr = None
+        self._orig_stderr_fd = None
+        self._stderr = None
+        self._value = ''
+
+    def getvalue(self):
+        return self._value
+
+    def __enter__(self):
+        self._orig_stderr = sys.stderr
+        self._orig_stderr.flush()
+        self._orig_stderr_fd_copy = os.dup(self._orig_stderr.fileno())
+        self._stderr = open(mktemp() + '.err', 'w+')
+        sys.stderr = self._stderr
+        os.dup2(self._stderr.fileno(), self._orig_stderr.fileno())
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        sys.stderr.flush()
+        os.dup2(self._orig_stderr_fd_copy, self._orig_stderr.fileno())
+        os.close(self._orig_stderr_fd_copy)
+        sys.stderr = self._orig_stderr
+        self._stderr.seek(0)
+        self._value = self._stderr.read()
+        self._stderr.close()
+        self._orig_stderr = None
+        self._orig_stderr_fd = None
+        self._stderr = None
+        if exc_val is not None:
+            sys.stderr.write(self._value)
 
 
 def _call_process(func, args, kwargs, **popen_args):

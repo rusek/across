@@ -169,7 +169,7 @@ Core functionality
 
     Get a Python script that, when executed via ``python -c``, creates a connection over standard input/output pipes.
     This script has no library dependencies, so it can be remotely executed (e.g. via ``ssh``) on machines where
-    ``across`` is not installed:
+    `across` is not installed:
 
     .. code-block:: python
 
@@ -336,19 +336,59 @@ Servers
 
 .. class:: ConnectionHandler
 
-    Connection handlers are responsible for wrapping accepted sockets in :class:`.Connection` objects.
+    Abstract base class for connection handlers. Connection handlers are responsible for wrapping accepted
+    sockets in :class:`.Connection` objects, and managing a pool of running connections.
 
-.. class:: LocalConnectionHandler()
+    Example:
+
+    .. code-block:: python
+
+        with LocalConnectionHandler() as handler:
+            sock = socket.socket()
+            sock.bind(('wonderland', 1865))
+            sock.listen(socket.SOMAXCONN)
+            while True:
+                handler.handle_socket(sock.accept()[0])
+
+    .. method:: handle_socket(sock)
+
+        Create :class:`.Connection` object around a given socket.
+
+        ``sock`` should be a socket object created with :func:`socket.socket` function.
+
+    .. method:: cancel()
+
+        Cancel all running connections.
+
+        This method is non-blocking. :meth:`close` must be called to properly free all the resources.
+
+    .. method:: close()
+
+        Close all running connections. Unless :meth:`cancel` has been called before, connections are
+        closed gracefully.
+
+.. class:: LocalConnectionHandler(*, options=None)
 
     Subclass of :class:`ConnectionHandler` that creates connections in the current process.
 
-.. class:: ProcessConnectionHandler()
+    ``options``, if specified, are passed to created connections. The value of ``options`` should be an instance
+    of :class:`.Options` class.
+
+.. class:: ProcessConnectionHandler(*, options=None)
 
     Subclass of :class:`ConnectionHandler` that creates a child process for each accepted socket.
 
-.. class:: BootstrappingConnectionHandler()
+    ``options``, if specified, are passed to created connections. The value of ``options`` should be an instance
+    of :class:`.Options` class.
 
-    Similar to :class:`ProcessConnectionHandler`, but created child processes perform connection bootstrapping.
+.. class:: BIOSConnectionHandler(*, options=None)
+
+    Similar to :class:`ProcessConnectionHandler`, but created child processes do not import a local version of
+    `across` library. Instead, `across` sources are fetched from a remote peer.
+
+    ``options``, if specified, should be an instance of :class:`.Options` class. :attr:`.Options.timeout`
+    specifies how long :meth:`close() <ConnectionHandler.close>` will wait for child processes to terminate gracefully before killing them.
+    Other options are ignored.
 
 .. function:: run_tcp(host, port, *, handler=None)
 
