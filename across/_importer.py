@@ -83,7 +83,7 @@ def _compile_safe_main(source, filename):
     return None
 
 
-def _get_remote_loader(fullname):
+def _find_across_loader(fullname):
     if fullname == '__main__':
         # Let's deal with various quirks of runpy module:
         #   - __spec__ is None when using 'python -c script.py', we have to fall back to __loader__
@@ -116,13 +116,15 @@ def _get_remote_loader(fullname):
         # Yet another hack, this time for implicit namespace packages.
         if spec.submodule_search_locations:
             logger.debug('Querying module %r (namespace), spec=%r', fullname, spec)
-            return _RemoteLoader('', True, '<source>')
+            return AcrossLoader('', True, '<source>')
         raise ValueError('{!r}.loader is not set'.format(spec))
     logger.debug('Querying module %r, spec=%r', fullname, spec)
     return _interrogate_loader(spec.loader, fullname)
 
 
 def _interrogate_loader(loader, fullname):
+    if isinstance(loader, AcrossLoader):
+        return loader
     get_source = getattr(loader, 'get_source', None)
     if get_source is None:
         raise TypeError('Loader {!r} for module {} does not implement get_source method'.format(loader, fullname))
@@ -133,16 +135,13 @@ def _interrogate_loader(loader, fullname):
     if is_package is None:
         raise TypeError('Loader {!r} for module {} does not implement is_package method'.format(loader, fullname))
     package = is_package(fullname)
-    if isinstance(loader, _RemoteLoader):
-        filename = loader.get_orig_filename()
-    else:
-        get_filename = getattr(loader, 'get_filename', None)
-        if get_filename is None:
-            raise TypeError('Loader {!r} for module {} does not implement get_filename method'.format(loader, fullname))
-        filename = get_filename(fullname)
-        if filename is None:
-            raise ValueError('Filename is not available for loader {!r} and module {}'.format(loader, fullname))
-    return _RemoteLoader(source, package, filename)
+    get_filename = getattr(loader, 'get_filename', None)
+    if get_filename is None:
+        raise TypeError('Loader {!r} for module {} does not implement get_filename method'.format(loader, fullname))
+    filename = get_filename(fullname)
+    if filename is None:
+        raise ValueError('Filename is not available for loader {!r} and module {}'.format(loader, fullname))
+    return AcrossLoader(source, package, filename)
 
 
 # For packages, __path__ attribute holds a list of directories where submodules are located. This object
@@ -162,20 +161,27 @@ class AcrossSearchPath:
         return False
 
 
-class _RemoteFinder(object):
-    def __init__(self, loaders):
-        self.__loaders = loaders
+class AcrossFinder:
+    def __init__(self):
+        self.__loaders = {}
         self.__conn = None
-        self.__exported_modules = {'across'}
+        self.__exported_modules = set()
 
-    def export(self, modules):
+    def export(self, modules, loaders=None):
         for name in modules:
             if '.' in name:
                 raise ValueError('Not a top-level module: {}'.format(name))
             if name in sys.modules and name not in self.__exported_modules and name != '__main__':
                 raise ValueError('Cannot export module {} because it is already imported'.format(name))
+
+        had_exported_modules = bool(self.__exported_modules)
         had_main = ('__main__' in self.__exported_modules)
         self.__exported_modules.update(modules)
+        if loaders is not None:
+            self.__loaders.update(loaders)
+
+        if self.__exported_modules and not had_exported_modules:
+            sys.meta_path.insert(0, self)
         if '__main__' in self.__exported_modules and not had_main:
             # I originally injected fake module here with __getattr__ loading the module lazily, but that
             # didn't work correctly on CPython 3.7 (ImportError raised when _compile_safe_main returns None
@@ -183,6 +189,8 @@ class _RemoteFinder(object):
             sys.modules.pop('__main__', None)
 
     def set_connection(self, conn):
+        if self.__conn is not None:
+            raise ValueError('Cannot import modules over multiple connections')
         self.__conn = conn
 
     def find_spec(self, fullname, path=None, target=None):
@@ -206,11 +214,11 @@ class _RemoteFinder(object):
         if fullname not in self.__loaders:
             if self.__conn is None:
                 return None
-            self.__loaders[fullname] = self.__conn.call(_get_remote_loader, fullname)
+            self.__loaders[fullname] = self.__conn.call(_find_across_loader, fullname)
         return self.__loaders[fullname]
 
 
-class _RemoteLoader(object):
+class AcrossLoader:
     def __init__(self, source, package, filename, code=None):
         self.__source = source
         self.__package = package
@@ -248,11 +256,12 @@ class _RemoteLoader(object):
     def exec_module(self, module):
         exec(self.get_code(module.__name__), module.__dict__)
 
-    def get_orig_filename(self):
-        return self.__filename
+    def __reduce__(self):
+        return AcrossLoader, self.deconstruct(with_code=False)
 
-    def deconstruct(self):
-        return self.__source, self.__package, self.__filename, self.__code
+    # For internal use only
+    def deconstruct(self, with_code):
+        return self.__source, self.__package, self.__filename, (self.__code if with_code else None)
 
 
 # This list contains 'across' module with all its depenendencies, excluding importer module
@@ -264,20 +273,20 @@ _core_module_names = (
 )
 
 
-def get_bootstrap_line(func, *args):
-    own_loader = _get_remote_loader(__name__)
+def get_bootloader(func, *args):
+    own_loader = _find_across_loader(__name__)
     if own_loader is None:
         raise ImportError('{} not found'.format(__name__))
 
     loaders = {}
     for module_name in _core_module_names:
-        loader = _get_remote_loader(module_name)
+        loader = _find_across_loader(module_name)
         if loader is None:
             raise ImportError('{} not found'.format(module_name))
-        loaders[module_name] = loader.deconstruct()
+        loaders[module_name] = loader.deconstruct(with_code=False)
 
     data = {
-        'own_loader': own_loader.deconstruct(),
+        'own_loader': own_loader.deconstruct(with_code=False),
         'ns': {'__name__': __name__},
         'loaders': loaders,
         'debug_level': get_debug_level(),
@@ -299,16 +308,11 @@ def _module_from_spec(spec):
     return module
 
 
-_finder = None
+_finder = AcrossFinder()
 
 
-def take_finder():
-    global _finder
-
-    finder = _finder
-    if finder is not None:
-        _finder = None
-    return finder
+def get_finder():
+    return _finder
 
 
 def _bootstrap(data):
@@ -322,8 +326,8 @@ def _bootstrap(data):
     # are not set, there is no entry in sys.modules, etc. First step is to create our own module.
     if __name__ in sys.modules:
         raise RuntimeError('{} already in sys.modules'.format(__name__))
-    # Beware: _RemoteLoader.__module__ is invalid. We will have to recreate loader object later.
-    tmp_loader = _RemoteLoader(*data['own_loader'])
+    # Beware: AcrossLoader.__module__ is invalid. We will have to recreate loader object later.
+    tmp_loader = AcrossLoader(*data['own_loader'])
     own_spec = importlib.util.spec_from_loader(__name__, tmp_loader)
     own_module = sys.modules[__name__] = _module_from_spec(own_spec)
     tmp_loader.exec_module(own_module)
@@ -334,19 +338,16 @@ def _bootstrap(data):
     own_module.set_debug_level(debug_level)
 
     # Recreate our own loader.
-    own_loader = own_module.__loader__ = own_spec.loader = own_module._RemoteLoader(*tmp_loader.deconstruct())
+    own_loader = own_module.AcrossLoader(*tmp_loader.deconstruct(with_code=True))
+    own_module.__loader__ = own_spec.loader = own_loader
 
-    # The most tricky part is behind us. Now let's create a finder object for loading remaining modules.
+    # The most tricky part is behind us. Now let's set up finder object for loading remaining modules.
     loaders = dict(
-        (module_name, own_module._RemoteLoader(*args))
+        (module_name, own_module.AcrossLoader(*args))
         for module_name, args in data['loaders'].items()
     )
     loaders[__name__] = own_loader
-    finder = own_module._RemoteFinder(loaders)
-
-    # Install finder.
-    sys.meta_path.insert(0, finder)
-    own_module._finder = finder
+    own_module.get_finder().export(['across'], loaders=loaders)
 
     # Now we can finally load startup function that takes care of creating Connection object.
     func, args = pickle.loads(data['func_with_args'])

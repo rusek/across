@@ -40,6 +40,8 @@ class LocalConnectionHandler(ConnectionHandler):
         self.__closed = False
         self.__cancelled = False
         self.__options = _sanitize_options(options)
+        if self.__options.accept_exported_modules:
+            raise ValueError('Cannot import modules over multiple connections')
 
     def handle_socket(self, sock):
         with self.__lock:

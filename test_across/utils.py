@@ -107,8 +107,8 @@ class ConnectionChannel(_MemoryChannel):
         self.__conn.close()
 
 
-def make_connection():
-    return Connection(ConnectionChannel())
+def make_connection(options=None):
+    return Connection(ConnectionChannel(), options=options)
 
 
 _box_counter = 0
@@ -232,7 +232,7 @@ pickle.dump(result, sys.stdout.buffer)"""],
         stdout=subprocess.PIPE,
         **popen_args
     )
-    stdout, stderr = process.communicate(pickle.dumps((func, args, kwargs)))
+    stdout, stderr = process.communicate(pickle.dumps((func, args, kwargs), protocol=4))
     if stderr is not None:
         stderr = stderr.decode()
     success, value = pickle.loads(stdout)

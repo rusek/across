@@ -103,6 +103,11 @@ Core functionality
 
         When importing a module remotely, local exported modules take precedence over modules installed remotely.
 
+        For this method to work, the connection on the other side must be created with
+        :attr:`accept_exported_modules <Options.accept_exported_modules>` option set to :obj:`True`. This is a
+        safety precaution to prevent a connection from injecting its local modules into a remote process that
+        shared among many connections.
+
     .. method:: call(func, /, *args, **kwargs)
 
         Call a given function remotely with supplied arguments, and pass back function return value / raised exception.
@@ -179,6 +184,9 @@ Core functionality
         with Connection.from_command(['ssh', 'wonderland', cmd]):
             conn.call(os.mkdir, '/home/alice')
 
+    A remote connection object constructed this way has :attr:`accept_exported_modules
+    <Options.accept_exported_modules>` option set to :obj:`True`.
+
 .. class:: Options(**options)
 
     With options you can tweak connections for your specific use case.
@@ -188,6 +196,11 @@ Core functionality
         Timeout for communication operations: sending/receiving data, connecting to a remote host, etc. The default
         value tries to keep a balance between detecting broken connections fast and avoiding false positives.
         Currently, it's one minute.
+
+    .. attribute:: accept_exported_modules
+
+        Boolean value indicating whether modules from a remote connection site can be imported into the current
+        process (see :meth:`Connection.export`). Defaults to :obj:`False`.
 
     .. method:: copy(**options)
 

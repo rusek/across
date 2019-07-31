@@ -212,6 +212,9 @@ class LocalConnectionHandlerTest(ConnectionHandlerTest):
     def make_handler(self, **kwargs):
         return LocalConnectionHandler(**kwargs)
 
+    def test_accepting_exported_modules_is_forbidden(self):
+        self.assertRaises(ValueError, LocalConnectionHandler, options=Options(accept_exported_modules=True))
+
 
 class ProcessConnectionHandlerTest(ProcessBasedConnectionHandlerTest):
     def make_handler(self, **kwargs):

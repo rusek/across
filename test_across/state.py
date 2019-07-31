@@ -1,10 +1,10 @@
 import unittest
 from concurrent.futures import Future
 
-from across import Connection, DisconnectError
+from across import Connection, DisconnectError, Options
 from across._channels import Channel
 
-from .utils import make_connection, make_channel_pair, ConnectionChannel, Box, call_process
+from .utils import make_connection, make_channel_pair, ConnectionChannel, Box, call_process_with_stderr
 
 
 class StateTest(unittest.TestCase):
@@ -13,13 +13,22 @@ class StateTest(unittest.TestCase):
         conn.close()
 
     def test_shutdown(self):
-        call_process(_test_shutdown)
+        # across._shutdown() calls Connection.cancel(), which causes various exceptions to be printed
+        # to stderr. Let's ignore them.
+        call_process_with_stderr(self._run_shutdown_test)
 
+    @staticmethod
+    def _run_shutdown_test():
+        for _ in range(3):
+            conn = make_connection()
+            conn.call(nop)
 
-def _test_shutdown():
-    for _ in range(3):
-        conn = make_connection()
-        conn.call(nop)
+    def test_shutdown_with_unresponsive_connections(self):
+        call_process_with_stderr(self._run_shutdown_with_unresponsive_connections_test)
+
+    @staticmethod
+    def _run_shutdown_with_unresponsive_connections_test():
+        Connection(make_channel_pair()[0], options=Options(timeout=1e100))
 
 
 class ConnectError(Exception):
