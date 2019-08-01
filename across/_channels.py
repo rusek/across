@@ -310,7 +310,7 @@ class SocketChannel(Channel):
         self.__poller.wait_send()
         error = self.__sock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
         if error != 0:
-            raise socket.error(error, os.strerror(error))
+            raise OSError(error, os.strerror(error))
 
     def __connect_loop(self):
         if self.__resolve:
@@ -325,7 +325,7 @@ class SocketChannel(Channel):
             try:
                 self.__connect_once(family, address)
                 return
-            except (socket.error, OSError) as error:
+            except OSError as error:
                 if self.__poller.is_cancelled():
                     raise
                 if not had_socket and self.__sock is not None:
