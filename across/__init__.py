@@ -981,6 +981,12 @@ class Proxy(object):
         self._Proxy__conn._del_remote_obj(self.__id)
 
 
+def get_proxy_connection(proxy):
+    if not isinstance(proxy, Proxy):
+        raise TypeError('Not a proxy: {!r}'.format(proxy))
+    return proxy._Proxy__conn
+
+
 _proxy_types = {}
 _safe_magic = frozenset([
     '__contains__', '__delitem__', '__getitem__', '__len__', '__setitem__', '__call__', '__iter__', '__next__'])

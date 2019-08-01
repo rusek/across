@@ -138,6 +138,12 @@ class ProxyTestCase(unittest.TestCase):
 
             conn2.call(nop, OnPickle(on_pickle))
 
+    def test_get_proxy_connection(self):
+        with make_connection() as conn:
+            proxy = conn.call_ref(list)
+            self.assertIs(across.get_proxy_connection(proxy), conn)
+            self.assertRaises(TypeError, across.get_proxy_connection, [])
+
 
 class ProxyDelTestCase(unittest.TestCase):
     def test_del(self):

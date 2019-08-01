@@ -243,6 +243,12 @@ Core functionality
     * container special methods: ``__len__``, ``__contains__``, ``__getitem__``, ``__setitem__``, ``__delitem__``;
     * ``__call__``.
 
+    To retrieve connection associated with a proxy, use :func:`get_proxy_connection` function.
+
+.. function:: get_proxy_connection(proxy)
+
+    Return a connection object associated with a given proxy.
+
 .. function:: ref(obj)
 
     Wrap a given object in a special marker indicating that the object should be passed / returned to a remote process
