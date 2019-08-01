@@ -328,16 +328,16 @@ def _sanitize_options(options=None):
 _unclosed_connections = set()
 _connection_counter = atomic_count(1)
 
-# Receiver thread establishes connection / performs handshake. Thre is no error (Connection.__cancel_error is None).
-# Sending data is allowed only from receiver thread.
+# Receiver thread establishes connection / performs handshake. Thre is no error (Connection.__error is None),
+# and Connection.cancel() was not called. Sending data is allowed only from receiver thread.
 _STARTING = 0
-# Handshake completed. No error. Any thread may send data.
+# Handshake completed. No error and no cancel. Any thread may send data.
 _RUNNING = 1
 # Receiver thread shuts down connection. Sender thread no longer accepts new data to send (new data is silently
-# dropped). Some error might have occurred (Connection.__cancel_error may not be None).
+# dropped). Some error might have occurred, or cancel() may have been called.
 _STOPPING = 2
 # Receiver thread finished execution and is waiting to be joined. All other resources are already freed.
-# Some error might have occurred.
+# Some error might have occurred, or cancel() might have been called.
 _STOPPED = 3
 # Receiver thread was joined. Error, if any, has been re-raised to the user (from Connection.close()).
 _CLOSED = 4
@@ -367,10 +367,11 @@ class Connection:
         self.__sender = _SenderThread(self.__framer, logger=self.__logger, cancel_func=self.__cancel)
         self.__receiver_thread = threading.Thread(target=self.__receiver_loop, daemon=True)
         self.__state_condition = threading.Condition(self.__lock)
-        self.__cancel_error = None
         self.__handlers_locked = self.__greeting_handlers_locked
         self.__state = _STARTING
         self.__was_running = False
+        self.__cancelled = False
+        self.__error = None
         self.__on_stopped = on_stopped
         self.__sender.send_superblock(_get_superblock())
 
@@ -498,24 +499,24 @@ class Connection:
             _unclosed_connections.remove(self)
             self.__receiver_thread.join()
             self.__logger.info('Connection closed')
-            if self.__cancel_error is not None:
+            if self.__error is not None:
                 try:
-                    raise self.__cancel_error
+                    raise self.__error
                 finally:
-                    self.__cancel_error = None
+                    self.__error = None
 
     def cancel(self):
         self.__cancel(None)
 
     def __cancel(self, error):
         with self.__lock:
-            if self.__cancel_error is None and self.__state not in (_STOPPED, _CLOSED):
+            if not self.__cancelled and self.__state not in (_STOPPED, _CLOSED):
                 if error is None:
                     self.__logger.info('Cancelling connection')
-                    error = OSError(errno.ECANCELED, os.strerror(errno.ECANCELED))
                 else:
                     self.__logger.error('Aborting connection due to %r', error)
-                self.__cancel_error = error
+                    self.__error = error
+                self.__cancelled = True
                 self.__set_stopping_locked()
                 try:
                     self.__channel.cancel()
@@ -528,7 +529,7 @@ class Connection:
         if self.__state in (_STARTING, _RUNNING):
             self.__state = _STOPPING
             self.__state_condition.notify_all()
-            if self.__cancel_error is None:
+            if not self.__cancelled:
                 self.__logger.info('Stopping connection')
                 msg = _Message()
                 msg.put_uint(_GOODBYE)
@@ -576,11 +577,13 @@ class Connection:
     def __make_disconnect_error_locked(self):
         if self.__state == _CLOSED:
             return DisconnectError('Connection is closed')
-        elif self.__cancel_error is None:
+        elif not self.__cancelled:
             return DisconnectError('Connection was remotely closed')
-        else:
+        elif self.__error is not None:
             return DisconnectError('Connection was aborted due to {}'.format(
-                format_exception_only(self.__cancel_error)))
+                format_exception_only(self.__error)))
+        else:
+            return DisconnectError('Connection was cancelled')
 
     def __serialize(self, msg, obj, as_exc=False):
         proxy_ids = []
@@ -687,7 +690,7 @@ class Connection:
         while True:
             msg = _Message(self.__framer.recv_frame())
             with self.__lock:
-                if self.__cancel_error is not None:
+                if self.__cancelled:
                     break
                 msg_type = msg.get_uint()
                 handler = self.__handlers_locked.get(msg_type)

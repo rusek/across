@@ -70,9 +70,7 @@ class LocalConnectionHandler(ConnectionHandler):
             conn.close()
         # Connection.close() may raise all different exception types.
         except Exception:
-            # Ignore exceptions after cancelling connections
-            if not self.__cancelled:
-                ignore_exception_at(conn.close)
+            ignore_exception_at(conn.close)
 
     def cancel(self):
         with self.__lock:

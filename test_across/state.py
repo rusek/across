@@ -65,7 +65,7 @@ class ContextManagerTest(unittest.TestCase):
         chan1, chan2 = make_channel_pair()
         conn = Connection(chan1)
         conn.cancel()
-        with self.assertRaises(OSError):
+        with self.assertRaises(ValueError):
             conn.__enter__()
 
     def test_exit_after_disconnect(self):
@@ -148,7 +148,7 @@ class DisconnectErrorTest(unittest.TestCase):
     def test_call_after_cancel(self):
         conn = make_connection()
         conn.cancel()
-        with self.assertRaisesRegex(DisconnectError, 'Connection was aborted due to .*'):
+        with self.assertRaisesRegex(DisconnectError, 'Connection was cancelled'):
             conn.call(nop)
         try:
             conn.close()
@@ -158,9 +158,7 @@ class DisconnectErrorTest(unittest.TestCase):
     def test_close_after_cancel(self):
         conn = make_connection()
         conn.cancel()
-        # TODO maybe close() shouldn't raise exception in this case?
-        with self.assertRaises(OSError):
-            conn.close()
+        conn.close()
 
     def test_connect_exception(self):
         chan = FailingChannel()
