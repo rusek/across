@@ -5,6 +5,7 @@ import os
 import sys
 import socket
 import errno
+import signal
 
 from ._utils import logger as _logger
 
@@ -238,19 +239,33 @@ class ProcessChannel(PipeChannel):
         self.__process = proc
         self.__args = args
         self.__logger = logger
+        self.__timeout = None
+
+    def set_timeout(self, timeout):
+        self.__timeout = timeout
+        super().set_timeout(timeout)
 
     def cancel(self):
+        self.__kill_process()
+        super().cancel()
+
+    def __kill_process(self):
+        if self.__process.poll() is not None:
+            return
         self.__logger.debug('Killing process %r', self.__process.pid)
         try:
             self.__process.kill()
         except OSError:  # process already terminated
             pass
-        super().cancel()
 
     def close(self):
         super().close()
         self.__logger.debug('Joining process %r', self.__process.pid)
-        retcode = self.__process.wait()
+        try:
+            retcode = self.__process.wait(self.__timeout)
+        except subprocess.TimeoutExpired:
+            self.__kill_process()
+            retcode = self.__process.wait()
         self.__logger.debug('Process joined, retcode=%r', retcode)
         if retcode:
             raise subprocess.CalledProcessError(retcode, self.__args)

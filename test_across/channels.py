@@ -3,8 +3,10 @@ import unittest.mock
 import socket
 import time
 import os.path
+import sys
+import subprocess
 
-from across._channels import SocketChannel, Channel
+from across._channels import SocketChannel, Channel, ProcessChannel
 
 from .utils import par, mktemp, localhost, localhost_ipv6, windows, skip_if_no_unix_sockets
 
@@ -331,6 +333,28 @@ class ResolverTest(unittest.TestCase):
 class UnixTest(ChannelTest):
     def create_server(self):
         return BasicSocketServer(family=socket.AF_UNIX, address=mktemp())
+
+
+class ProcessChannelTest(unittest.TestCase):
+    def make_stuck_channel(self):
+        return ProcessChannel([sys.executable, '-c', """
+import time
+while True:
+    try:
+        time.sleep(60)
+    except KeyboardInterrupt:
+        pass
+        """])
+
+    def test_close_timeout(self):
+        chan = self.make_stuck_channel()
+        chan.set_timeout(0.01)
+        self.assertRaises(subprocess.CalledProcessError, chan.close)
+
+    def test_cancel_before_close(self):
+        chan = self.make_stuck_channel()
+        chan.cancel()
+        self.assertRaises(subprocess.CalledProcessError, chan.close)
 
 
 del ChannelTest
