@@ -150,6 +150,10 @@ Core functionality
             conn.execute('two = 2; two + two')
             conn.execute('x + x', x=2)
 
+    .. method:: is_connected()
+
+        Return a boolean value indicating whether connection with a remote site is still alive.
+
     .. method:: cancel()
 
         Cancel all operations and forcibly disconnect from a remote Python process.

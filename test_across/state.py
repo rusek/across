@@ -10,7 +10,9 @@ from .utils import make_connection, make_channel_pair, ConnectionChannel, Box, c
 class StateTest(unittest.TestCase):
     def test_immediate_close(self):
         conn = make_connection()
+        self.assertTrue(conn.is_connected())
         conn.close()
+        self.assertFalse(conn.is_connected())
 
     def test_shutdown(self):
         # across._shutdown() calls Connection.cancel(), which causes various exceptions to be printed
@@ -157,7 +159,9 @@ class DisconnectErrorTest(unittest.TestCase):
 
     def test_close_after_cancel(self):
         conn = make_connection()
+        self.assertTrue(conn.is_connected())
         conn.cancel()
+        self.assertFalse(conn.is_connected())
         conn.close()
 
     def test_connect_exception(self):

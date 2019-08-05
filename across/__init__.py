@@ -802,6 +802,10 @@ class Connection:
         None: 'greeting',
     }
 
+    def is_connected(self):
+        # Lock not needed, because attribute access is atomic
+        return self.__state in (_STARTING, _RUNNING)
+
     def wait(self):
         with self.__lock:
             while self.__state in (_STARTING, _RUNNING):

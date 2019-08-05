@@ -8,6 +8,7 @@ Contents
     :maxdepth: 2
 
     intro
+    cookbook
     api
 
 Indices and tables
