@@ -229,6 +229,22 @@ class ExceptionTest(unittest.TestCase):
             formatted_tb,
         )
 
+    def test_traceback_repeated_lines(self):
+        def func(n):
+            if n > 0:
+                func(n - 1)
+            else:
+                raise TestError
+
+        max_repeats = 3
+        for num_repeats, expected_text in [
+            (max_repeats + 1, '[Previous line repeated 1 more time]'),
+            (max_repeats + 5, '[Previous line repeated 5 more times]'),
+        ]:
+            exc = self._capture_exc(func, num_repeats)
+            formatted_tb = ''.join(traceback.format_tb(exc.__traceback__))
+            self.assertIn(expected_text, formatted_tb)
+
 
 magic = 'abracadabra'
 

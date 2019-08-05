@@ -12,7 +12,7 @@ import linecache
 import os
 import warnings
 import copy
-import errno
+import itertools
 
 from ._importer import get_bootloader, get_finder
 from ._utils import (
@@ -896,29 +896,30 @@ def _dump_exception(exc, memo=None):
     )
 
 
-def _get_process_name():
-    return '{}:{}'.format(socket.gethostname(), os.getpid())
-
-
 def _dump_traceback(tb):
     entries = []
-    packed_tb = [(_get_process_name(), entries)]
+    base_packed_tb = None
     while tb is not None:
         frame = tb.tb_frame
         globs = frame.f_globals
         if tb.tb_next is None and _packed_tb_var in globs:
-            packed_tb += globs[_packed_tb_var]
+            base_packed_tb = globs[_packed_tb_var]
         else:
             code = frame.f_code
             filename, lineno = code.co_filename, tb.tb_lineno
             line = linecache.getline(filename, lineno, globs)
             entries.append((filename, lineno, code.co_name, line))
         tb = tb.tb_next
+    packed_tb = []
+    if entries:
+        packed_tb.append((socket.gethostname(), os.getpid(), entries))
+    if base_packed_tb:
+        packed_tb.extend(base_packed_tb)
     return packed_tb
 
 
 _packed_tb_var = '__across_packed_tb'
-_code_tpl = compile('raise ValueError', '<traceback generator>', 'exec')
+_code_tpl = compile('raise ValueError', '<traceback loader>', 'exec')
 
 
 # This function creates a types.TracebackType object (which requires raising some exception, by the way)
@@ -958,12 +959,22 @@ def _generate_traceback_object(formatted_tb, packed_tb):
 
 def _load_traceback(packed_tb):
     buf = []
-    for procname, entries in packed_tb:
-        buf.append('  [Returned from process "{}"]\n'.format(procname))
-        for filename, lineno, name, line in entries:
-            buf.append('  File "{}", line {}, in {}\n'.format(filename, lineno, name))
-            if line:
-                buf.append('    {}\n'.format(line.strip()))
+    max_repeats = 3  # same as in traceback module
+    for hostname, pid, entries in packed_tb:
+        buf.append('  [Below lines obtained from host "{}", process {}]\n'.format(hostname, pid))
+        for (filename, lineno, name, line), group in itertools.groupby(entries):
+            overflow = -max_repeats
+            for _ in group:
+                overflow += 1
+                if overflow <= 0:
+                    buf.append('  File "{}", line {}, in {}\n'.format(filename, lineno, name))
+                    if line:
+                        buf.append('    {}\n'.format(line.strip()))
+            if overflow > 0:
+                buf.append('  [Previous line repeated {} more {}]\n'.format(
+                    overflow,
+                    'time' if overflow == 1 else 'times',
+                ))
     return _generate_traceback_object(''.join(buf), packed_tb)
 
 
