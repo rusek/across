@@ -13,6 +13,7 @@ import os
 import warnings
 import copy
 import itertools
+import collections
 
 from ._importer import get_bootloader, get_finder
 from ._utils import (
@@ -36,15 +37,18 @@ class _Framer:
     def send_superblock(self, superblock):
         self.__sendall(superblock)
 
-    def send_frame(self, frame):
-        self.__sendall(struct.pack('>I', len(frame)) + frame)
+    def send_message(self, msg):
+        buffers = msg.to_buffers()
+        for num, buffer in enumerate(buffers, 1):
+            self.__sendall(struct.pack('>Q', len(buffer) << 1 | (num < len(buffers))))
+            self.__sendall(buffer)
 
     def send_bootloader(self, bootloader):
         data = bootloader.encode('ascii')
         self.__sendall(struct.pack('>I', len(data)) + data)
 
-    def __sendall(self, data):
-        buffer = memoryview(data)
+    def __sendall(self, buffer):
+        buffer = memoryview(buffer)
         while buffer:
             size = self.__channel.send(buffer)
             assert size > 0
@@ -56,15 +60,21 @@ class _Framer:
             raise EOFError('Incomplete superblock')
         return superblock
 
-    def recv_frame(self):
-        header = self.__recvall(4)
-        if header is None:
-            raise EOFError('Incomplete frame size')
-        size, = struct.unpack('>I', header)
-        frame = self.__recvall(size)
-        if frame is None:
-            raise EOFError('Incomplete frame')
-        return frame
+    def recv_message(self):
+        buffers = collections.deque()
+        more = True
+        while more:
+            header = self.__recvall(8)
+            if header is None:
+                raise EOFError('Incomplete frame size')
+            size, = struct.unpack('>Q', header)
+            more = size & 1
+            size >>= 1
+            buffer = self.__recvall(size)
+            if buffer is None:
+                raise EOFError('Incomplete frame')
+            buffers.append(buffer)
+        return _Message(buffers)
 
     def __recvall(self, size):
         data = bytearray(size)
@@ -77,12 +87,22 @@ class _Framer:
         return data
 
 
+# Message consists of:
+#   - an internal buffer that is read from / written to with get_*/put_* methods
+#   - a list of out-of-band buffers accessible through 'buffers' attribute
 class _Message:
-    def __init__(self, frame=None):
-        self.__buffer = io.BytesIO(frame)
+    def __init__(self, buffers=None):
+        if buffers:
+            self.__buffer = io.BytesIO(buffers.popleft())
+            self.buffers = buffers
+        else:
+            self.__buffer = io.BytesIO()
+            self.buffers = collections.deque()
 
-    def as_bytes(self):
-        return self.__buffer.getvalue()
+    def to_buffers(self):
+        buffers = self.buffers.copy()
+        buffers.appendleft(self.__buffer.getbuffer())
+        return buffers
 
     def put_uint(self, obj):
         if obj <= 0xfc:
@@ -192,7 +212,7 @@ class _SenderThread(threading.Thread):
         self.__logger.debug('Sending idle frame')
         msg = _Message()
         msg.put_uint(_IDLE)
-        self.__framer.send_frame(msg.as_bytes())
+        self.__framer.send_message(msg)
 
     def send_superblock(self, superblock):
         def handler():
@@ -201,9 +221,9 @@ class _SenderThread(threading.Thread):
         self.__queue.put(handler)
 
     # Important: this function must be reentrant
-    def send_frame(self, frame):
+    def send_message(self, msg):
         def handler():
-            self.__framer.send_frame(frame)
+            self.__framer.send_message(msg)
 
         self.__queue.put(handler)
 
@@ -213,9 +233,9 @@ class _SenderThread(threading.Thread):
 
         self.__queue.put(handler)
 
-    def send_frame_and_stop(self, frame):
+    def send_message_and_stop(self, msg):
         def handler():
-            self.__framer.send_frame(frame)
+            self.__framer.send_message(msg)
             return False
 
         self.__queue.put(handler)
@@ -251,13 +271,6 @@ def get_bios():
     to_send = _get_bios_superblock()
     return ("import sys;i,o=sys.stdin.buffer,sys.stdout.buffer;o.write({!r});o.flush();i.read({!r});"
             "ACROSS='stdio',;exec(i.readline())".format(to_send, to_skip))
-
-
-def _get_greeting_frame(timeout_ms):
-    msg = _Message()
-    msg.put_uint(_GREETING)
-    msg.put_uint(timeout_ms)
-    return msg.as_bytes()
 
 
 # timeout (in ms) is transmitted as uint64; these limits help avoiding internal
@@ -465,7 +478,7 @@ class Connection:
         msg.put_uint(_DEL_OBJS)
         msg.put_uint(1)
         msg.put_uint(id)
-        self.__sender.send_frame(msg.as_bytes())
+        self.__sender.send_message(msg)
 
     def __enter__(self):
         with self.__lock:
@@ -533,7 +546,7 @@ class Connection:
                 self.__logger.info('Stopping connection')
                 msg = _Message()
                 msg.put_uint(_GOODBYE)
-                self.__sender.send_frame_and_stop(msg.as_bytes())
+                self.__sender.send_message_and_stop(msg)
             else:
                 self.__sender.stop()
             for future in self.__calls.values():
@@ -563,7 +576,7 @@ class Connection:
                 _self.__calls.pop(call_id, None)
             raise
 
-        _self.__sender.send_frame(msg.as_bytes())
+        _self.__sender.send_message(msg)
 
         msg = future.result()
         result = msg.get_uint()
@@ -592,7 +605,7 @@ class Connection:
                 if as_exc:
                     obj = _dump_exception(obj)
                 # Use pickle protocol added in Python 3.4.
-                msg.put_bytes(pickle.dumps(obj, protocol=4))
+                msg.buffers.append(pickle.dumps(obj, protocol=4))
                 msg.put_uint(len(proxy_ids))
                 for proxy_id in proxy_ids:
                     msg.put_uint(proxy_id)
@@ -607,7 +620,7 @@ class Connection:
         proxy_ids = []
         with _ConnScope(self, proxy_ids=proxy_ids):
             try:
-                obj = pickle.loads(msg.get_bytes())
+                obj = pickle.loads(msg.buffers.popleft())
                 if as_exc:
                     obj = _load_exception(obj)
                 return obj
@@ -620,7 +633,7 @@ class Connection:
                     msg.put_uint(len(leaked_proxy_ids))
                     for proxy_id in leaked_proxy_ids:
                         msg.put_uint(proxy_id)
-                    self.__sender.send_frame(msg.as_bytes())
+                    self.__sender.send_message(msg)
                 raise OperationError('Unpickling failed failed due to {}'.format(
                     format_exception_only(error))) from error
 
@@ -669,7 +682,10 @@ class Connection:
                     raise ProtocolError('Local across {} is not compatible with remote {}.{}.{}'.format(
                         __version__, major, minor, patch
                     ))
-                self.__sender.send_frame(_get_greeting_frame(self.__timeout_ms))
+                msg = _Message()
+                msg.put_uint(_GREETING)
+                msg.put_uint(self.__timeout_ms)
+                self.__sender.send_message(msg)
                 break
             elif magic == _BIOS_MAGIC:
                 self.__logger.debug('Bootrapping needed with version at least %s.%s.%s', major, minor, patch)
@@ -688,7 +704,7 @@ class Connection:
 
     def __receive_msgs(self):
         while True:
-            msg = _Message(self.__framer.recv_frame())
+            msg = self.__framer.recv_message()
             with self.__lock:
                 if self.__cancelled:
                     break
@@ -767,7 +783,7 @@ class Connection:
                 msg.put_uint(_RESULT_OPERATION_ERROR)
                 msg.put_bytes(str(error).encode('utf-8', errors='replace'))
 
-        self.__sender.send_frame(msg.as_bytes())
+        self.__sender.send_message(msg)
         value = None  # break reference cycle then 'value' holds an exception
 
     def __handle_result_locked(self, msg):

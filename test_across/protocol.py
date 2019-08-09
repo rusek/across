@@ -25,16 +25,22 @@ class ProtocolErrorChannel(Channel):
         return len(buffer)
 
 
+def msg_to_bytes(msg):
+    buffers = msg.to_buffers()
+    assert len(buffers) == 1  # other cases are currently not handled
+    return struct.pack('>Q', len(buffers[0]) << 1) + buffers[0]
+
+
 class ProtocolErrorTest(unittest.TestCase):
-    def __simulate_error(self, msg=None, frame=None, data=None, prepend_superblock=True, prepend_greeting=True):
+    def __simulate_error(self, msg=None, data=None, prepend_superblock=True, prepend_greeting=True):
         if msg is not None:
-            frame = msg.as_bytes()
-        if frame is not None:
-            data = struct.pack('>I', len(frame)) + frame
+            data = msg_to_bytes(msg)
         if prepend_superblock:
             if prepend_greeting:
-                greeting_frame = across._get_greeting_frame(0)
-                data = struct.pack('>I', len(greeting_frame)) + greeting_frame + data
+                greeting_msg = across._Message()
+                greeting_msg.put_uint(across._GREETING)
+                greeting_msg.put_uint(0)
+                data = msg_to_bytes(greeting_msg) + data
             data = across._get_superblock() + data
         with across.Connection(ProtocolErrorChannel(data)) as conn:
             conn.wait()
@@ -47,9 +53,9 @@ class ProtocolErrorTest(unittest.TestCase):
 
     def test_incomplete_frame(self):
         with self.assertRaisesRegex(EOFError, 'Incomplete frame'):
-            self.__simulate_error(data=struct.pack('>I', 10))
+            self.__simulate_error(data=struct.pack('>Q', 10 << 1))
         with self.assertRaisesRegex(EOFError, 'Incomplete frame'):
-            self.__simulate_error(data=struct.pack('>I', 10) + b'abc')
+            self.__simulate_error(data=struct.pack('>Q', 10 << 1) + b'abc')
 
     def test_invalid_result_call_id(self):
         with self.assertRaisesRegex(across.ProtocolError, 'Call not found: 404'):
