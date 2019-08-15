@@ -237,13 +237,14 @@ class ExceptionTest(unittest.TestCase):
                 raise TestError
 
         max_repeats = 3
-        for num_repeats, expected_text in [
-            (max_repeats + 1, '[Previous line repeated 1 more time]'),
-            (max_repeats + 5, '[Previous line repeated 5 more times]'),
-        ]:
-            exc = self._capture_exc(func, num_repeats)
-            formatted_tb = ''.join(traceback.format_tb(exc.__traceback__))
-            self.assertIn(expected_text, formatted_tb)
+        with make_connection() as conn:
+            for num_repeats, expected_text in [
+                (max_repeats + 1, '[Previous line repeated 1 more time]'),
+                (max_repeats + 5, '[Previous line repeated 5 more times]'),
+            ]:
+                exc = self._capture_exc(conn.call, Box(func), num_repeats)
+                formatted_tb = ''.join(traceback.format_tb(exc.__traceback__))
+                self.assertIn(expected_text, formatted_tb)
 
 
 magic = 'abracadabra'

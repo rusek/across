@@ -100,7 +100,7 @@ class _Message:
             self.buffers = collections.deque()
 
     def to_buffers(self):
-        buffers = self.buffers.copy()
+        buffers = collections.deque(self.buffers)
         buffers.appendleft(self.__buffer.getbuffer())
         return buffers
 

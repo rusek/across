@@ -151,7 +151,14 @@ class ConnectionHandlerTest(unittest.TestCase):
         handler, conn = self.make_handler_and_connection()
         self.assertEqual(conn.call(add, 1, 2), 3)
         handler.close()
-        conn.close()
+        if windows:
+            try:
+                conn.close()
+            except OSError:  # Connection reset by peer
+                pass
+        else:
+            conn.close()
+
 
     def test_cancel_with_running_connection(self):
         handler, conn = self.make_handler_and_connection()
@@ -181,7 +188,10 @@ class ConnectionHandlerTest(unittest.TestCase):
             with self.make_handler(options=Options(timeout=0.01)) as handler:
                 handler.handle_socket(sock2)
                 # Wait for other side to close the connection.
-                while sock1.recv(1024) != b'':
+                try:
+                    while sock1.recv(1024) != b'':
+                        pass
+                except OSError:  # Connection reset by peer on Windows
                     pass
         sock1.close()
 
@@ -293,7 +303,10 @@ class ServerTest(unittest.TestCase):
             conn = Connection.from_tcp(*worker.address)
             self.assertEqual(conn.call(add, 1, 2), 3)
         self.assertRaises(DisconnectError, conn.call, add, 1, 2)
-        conn.close()
+        try:
+            conn.close()
+        except OSError:  # Connection reset by peer on Windows
+            pass
 
 
 @skip_if_no_unix_sockets

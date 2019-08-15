@@ -124,6 +124,10 @@ class _ProcessConnectionHandlerBase(ConnectionHandler):
             proc.stdin.close()
             sock.close()
             return proc
+
+        # There's CTRL_C_EVENT on Windows, but it's restricted to processes running in a console window.
+        # Since there's no better alternative, let's just kill the process.
+        _interrupt_signal = signal.SIGTERM
     else:
         def _create_proc(self, sock):
             proc = subprocess.Popen(
@@ -133,6 +137,8 @@ class _ProcessConnectionHandlerBase(ConnectionHandler):
             )
             sock.close()
             return proc
+
+        _interrupt_signal = signal.SIGINT
 
     def _collect_procs(self):
         for proc in self._procs.copy():
@@ -149,7 +155,7 @@ class _ProcessConnectionHandlerBase(ConnectionHandler):
         if proc.poll() is None:
             _logger.debug('Interrupting process %r', proc.pid)
             try:
-                proc.send_signal(signal.SIGINT)
+                proc.send_signal(self._interrupt_signal)
             except OSError:  # process already exited
                 pass
 
@@ -191,7 +197,7 @@ class _ProcessConnectionHandlerBase(ConnectionHandler):
 
 class ProcessConnectionHandler(_ProcessConnectionHandlerBase):
     def _get_base_args(self):
-        data = base64.b64encode(pickle.dumps((get_debug_level(), self._options)))
+        data = base64.b64encode(pickle.dumps((get_debug_level(), self._options))).decode('ascii')
         return [sys.executable, '-m', __name__, _serve_arg, data]
 
 
@@ -228,11 +234,23 @@ class BIOSConnectionHandler(_ProcessConnectionHandlerBase):
         return [sys.executable, '-c', _socket_bios, str(self._options.timeout)]
 
 
+# IPPROTO_IPV6 is missing on Windows and Python < 3.8
+try:
+    _IPPROTO_IPV6 = socket.IPPROTO_IPV6
+except AttributeError:
+    if _windows:
+        # https://github.com/mirror/mingw-w64/blob/16151c441e89081fd398270bb888511ebef6fb35/
+        # mingw-w64-headers/include/winsock2.h
+        _IPPROTO_IPV6 = 41
+    else:
+        raise
+
+
 def _tune_server_socket(sock):
     if sock.family in (socket.AF_INET, socket.AF_INET6):
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     if sock.family == socket.AF_INET6:
-        sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        sock.setsockopt(_IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
 
 
 _open_socket = socket.socket  # patched by tests
