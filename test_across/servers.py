@@ -14,7 +14,7 @@ from across._utils import get_debug_level
 
 from .utils import (
     mktemp, localhost, localhost_ipv6, anyaddr_ipv6, windows, skip_if_no_unix_sockets, call_process_with_stderr,
-    logging_error_marker, InheritableStderrCollector)
+    logging_error_marker, InheritableStderrCollector, skip_if_no_ipv6)
 
 
 def make_tcp_socket_pair():
@@ -247,16 +247,6 @@ class ServerTest(unittest.TestCase):
             with Connection.from_tcp(*worker.address) as conn:
                 self.assertEqual(conn.call(add, 1, 2), 3)
 
-    def test_tcp_ipv6(self):
-        with ServerWorker(run_tcp, localhost_ipv6, 0) as worker:
-            with Connection.from_tcp(*worker.address[:2]) as conn:
-                self.assertEqual(conn.call(add, 1, 2), 3)
-
-    def test_tcp_dual_stack(self):
-        with ServerWorker(run_tcp, anyaddr_ipv6, 0) as worker:
-            with Connection.from_tcp(localhost, worker.address[1]) as conn:
-                self.assertEqual(conn.call(add, 1, 2), 3)
-
     def test_multiple_connections(self):
         with ServerWorker(run_tcp, localhost, 0) as worker:
             num_conns = 5
@@ -307,6 +297,19 @@ class ServerTest(unittest.TestCase):
             conn.close()
         except OSError:  # Connection reset by peer on Windows
             pass
+
+
+@skip_if_no_ipv6
+class ServerTestIPv6(unittest.TestCase):
+    def test_tcp_ipv6(self):
+        with ServerWorker(run_tcp, localhost_ipv6, 0) as worker:
+            with Connection.from_tcp(*worker.address[:2]) as conn:
+                self.assertEqual(conn.call(add, 1, 2), 3)
+
+    def test_tcp_dual_stack(self):
+        with ServerWorker(run_tcp, anyaddr_ipv6, 0) as worker:
+            with Connection.from_tcp(localhost, worker.address[1]) as conn:
+                self.assertEqual(conn.call(add, 1, 2), 3)
 
 
 @skip_if_no_unix_sockets

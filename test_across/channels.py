@@ -8,7 +8,7 @@ import subprocess
 
 from across._channels import SocketChannel, Channel, ProcessChannel
 
-from .utils import par, mktemp, localhost, localhost_ipv6, windows, skip_if_no_unix_sockets
+from .utils import par, mktemp, localhost, localhost_ipv6, windows, skip_if_no_unix_sockets, skip_if_no_ipv6
 
 
 def get_open_fds():
@@ -289,6 +289,7 @@ class TCPTest(ChannelTest):
         chan.close()
 
 
+@skip_if_no_ipv6
 class TCPTestIPv6(ChannelTest):
     def create_server(self):
         return BasicSocketServer(family=socket.AF_INET6, address=(localhost_ipv6, 0, 0, 0))

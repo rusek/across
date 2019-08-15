@@ -13,6 +13,7 @@ import shutil
 import unittest
 import sys
 import socket
+import errno
 
 from across import Connection
 from across._channels import Channel
@@ -305,6 +306,21 @@ localhost_ipv6 = '::1'
 anyaddr = '0.0.0.0'
 anyaddr_ipv6 = '::'
 
+
+def _has_ipv6():
+    sock = socket.socket(socket.AF_INET6)
+    try:
+        sock.bind((localhost_ipv6, 0))
+    except OSError as exc:
+        if exc.errno == errno.EADDRNOTAVAIL:
+            return False
+        raise
+    finally:
+        sock.close()
+    return True
+
+
 windows = sys.platform == 'win32'
 
 skip_if_no_unix_sockets = unittest.skipUnless(hasattr(socket, 'AF_UNIX'), 'Unix domain sockets are not available')
+skip_if_no_ipv6 = unittest.skipUnless(_has_ipv6(), 'IPv6 is not available')

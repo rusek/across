@@ -10,7 +10,7 @@ import argparse
 import across
 from across.__main__ import _parse_tcp
 
-from .utils import par, mktemp, localhost, localhost_ipv6, anyaddr, skip_if_no_unix_sockets
+from .utils import par, mktemp, localhost, localhost_ipv6, anyaddr, skip_if_no_unix_sockets, skip_if_no_ipv6
 
 
 def spawn_main(args, **popen_extras):
@@ -98,6 +98,7 @@ class MainTest(unittest.TestCase):
     def test_tcp_server(self):
         self._run_tcp_server_test(socket.AF_INET)
 
+    @skip_if_no_ipv6
     def test_tcp_server_ipv6(self):
         self._run_tcp_server_test(socket.AF_INET6)
 
