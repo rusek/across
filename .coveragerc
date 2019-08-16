@@ -1,0 +1,9 @@
+[run]
+branch = True
+source = across
+parallel = True
+
+[report]
+exclude_lines =
+    if _windows:
+    raise NotImplementedError

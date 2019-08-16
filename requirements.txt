@@ -1,4 +1,5 @@
 # Required packages:
+coverage==4.5.4
 pycodestyle==2.5.0
 Sphinx==2.1.2
 sphinx-rtd-theme==0.4.3

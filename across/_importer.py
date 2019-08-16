@@ -141,7 +141,20 @@ def _interrogate_loader(loader, fullname):
     filename = get_filename(fullname)
     if filename is None:
         raise ValueError('Filename is not available for loader {!r} and module {}'.format(loader, fullname))
-    return AcrossLoader(source, package, filename)
+    return AcrossLoader(source, package, _mangle_filename(filename))
+
+
+# Make filename of a local module safe for remote use.
+#
+# Dummy filenames ('<...>') are left unchanged, because such names are typically not interpreted in any way.
+# For anything else, we need to ensure that the resulting filename will not point to an existing file on a remote
+# machine, otherwise linecache module will use that file to obtain module source instead of using
+# AcrossLoader.get_source() method. We do that by appending '*' to filename, hoping that nobody will ever create
+# a file with '.py*' extension.
+def _mangle_filename(filename):
+    if filename.startswith('<') and filename.endswith('>'):
+        return filename
+    return filename + '*'
 
 
 # For packages, __path__ attribute holds a list of directories where submodules are located. This object
@@ -226,11 +239,7 @@ class AcrossLoader:
         self.__code = code
 
     def get_filename(self, fullname):
-        if self.__filename.startswith('<') and self.__filename.endswith('>'):
-            return self.__filename
-        # We need to apply some sort of mangling to prevent clash with local files. Appending '*' seems like
-        # a good solution, because it's rather unlikely that anyone else would create a file with '.py*' extension.
-        return self.__filename + '*'
+        return self.__filename
 
     def get_code(self, fullname):
         if self.__code is None:
@@ -264,7 +273,7 @@ class AcrossLoader:
         return self.__source, self.__package, self.__filename, (self.__code if with_code else None)
 
 
-# This list contains 'across' module with all its depenendencies, excluding importer module
+# This list contains 'across' module with all its dependencies, excluding importer module
 # (which is a different story, because it needs to load itself).
 _core_module_names = (
     'across',
@@ -293,8 +302,12 @@ def get_bootloader(func, *args):
         'func_with_args': pickle.dumps((func, args), protocol=3),
     }
 
-    return ("__across_boot={!r};exec(__across_boot['own_loader'][0],__across_boot['ns']);"
-            "__across_boot=__across_boot['ns']['_bootstrap'](__across_boot);__across_boot(ACROSS)\n".format(data))
+    # If we compile the code without providing filename, coverage for _bootstrap() function will not be computed.
+    return (
+        "__across_boot={!r};exec(compile(__across_boot['own_loader'][0],__across_boot['own_loader'][2],'exec',"
+        "dont_inherit=True),__across_boot['ns']);__across_boot=__across_boot['ns']['_bootstrap'](__across_boot);"
+        "__across_boot(ACROSS)\n".format(data)
+    )
 
 
 def _module_from_spec(spec):
