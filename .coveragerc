@@ -1,7 +1,6 @@
 [run]
 branch = True
-source = .
-omit = /tmp/*, test_across*, setup.py
+source = across
 parallel = True
 
 [report]
