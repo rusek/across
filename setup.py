@@ -1,6 +1,11 @@
 from setuptools import setup
+import os.path
 
 import across
+
+
+with open(os.path.join(os.path.dirname(__file__), 'README.rst')) as handle:
+    long_description = handle.read()
 
 
 setup(
@@ -8,7 +13,15 @@ setup(
     version=across.__version__,
     author='Krzysztof Rusek',
     author_email='savix5@gmail.com',
-    description='Run Python code across different machines',
+    description='Run Python code across the universe',
+    long_description=open(os.path.join(os.path.dirname(__file__), 'README.rst')).read(),
+    long_description_content_type='text/x-rst',
+    url='https://github.com/rusek/across',
+    project_urls={
+        'Documentation': 'https://acrosspy.readthedocs.io/',
+        'Source code': 'https://github.com/rusek/across',
+        'Issue tracker': 'https://code.djangoproject.com/',
+    },
     license='MIT',
     packages=['across'],
     platforms=['any'],

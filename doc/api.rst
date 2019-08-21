@@ -137,7 +137,7 @@ Core functionality
 
         Create a remote copy of a given object, and return a proxy referencing it.
 
-        For :meth:`replicate` method to work, ``obj`` must be pickleable. This method may rairse :exc:`OperationError`
+        For :meth:`replicate` method to work, ``obj`` must be pickleable. This method may raise :exc:`OperationError`
         to indicate an internal error (pickling / unpickling error, lost connection with a remote process, etc.).
 
     .. method:: execute(source, /, **vars)
