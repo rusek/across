@@ -287,17 +287,16 @@ def func():
             sys.path[:] = orig_sys_path
 
 
-def create_script(script):
-    script = """
-import sys
-sys.path.insert(0, {!r})
-""".format(os.path.dirname(os.path.dirname(__file__))) + script
+def get_script_preambule():
+    return 'import sys; sys.path.insert(0, {!r})\n'.format(os.path.dirname(os.path.dirname(__file__)))
 
+
+def create_script(script):
     path = mktemp()
     os.mkdir(path)
     path = os.path.join(path, 'script.py')
     with open(path, 'w') as fh:
-        fh.write(script)
+        fh.write(get_script_preambule() + script)
     return path
 
 
@@ -386,6 +385,23 @@ if __name__ == '__main__':
         conn.call(func, 2)
 """)
         subprocess.check_call([sys.executable, path])
+
+    def test_main_py_relative_imports(self):
+        path = mktemp()
+        module_name = make_fake_module_name()
+        make_files({path: {module_name: {
+            '__init__.py': '',
+            '__main__.py': get_script_preambule() + """
+from test_across.importer import boot_connection
+from .submod import func_in_submod
+def func_in_main(): func_in_submod()
+if __name__ == '__main__':
+    with boot_connection(['__main__', __package__]) as conn:
+        conn.call(func_in_main)
+            """,
+            'submod.py': 'def func_in_submod(): pass',
+        }}})
+        subprocess.check_call([sys.executable, '-m', module_name], cwd=path)
 
 
 class SafeMainTest(unittest.TestCase):

@@ -97,18 +97,19 @@ def _find_across_loader(fullname):
         #     expected by __spec__.__loader__
         main_mod = sys.modules.get('__main__')
         if main_mod is not None:
+            parent_override = main_mod.__package__
             spec = getattr(main_mod, '__spec__', None)
             if spec is None:
                 loader = getattr(main_mod, '__loader__', None)
                 if loader is None:
                     raise ValueError('__main__.__loader__ is not set')
                 logger.debug('Querying module %r, loader=%r', fullname, loader)
-                return _interrogate_loader(loader, fullname)
+                return _interrogate_loader(loader, fullname, parent_override=parent_override)
             else:
                 if spec.loader is None:
                     raise ValueError('{!r}.loader is not set'.format(spec))
                 logger.debug('Querying module %r (main), spec=%r', spec.name, spec)
-                return _interrogate_loader(spec.loader, spec.name)
+                return _interrogate_loader(spec.loader, spec.name, parent_override=parent_override)
 
     try:
         spec = importlib.util.find_spec(fullname)
@@ -128,7 +129,7 @@ def _find_across_loader(fullname):
     return _interrogate_loader(spec.loader, fullname)
 
 
-def _interrogate_loader(loader, fullname):
+def _interrogate_loader(loader, fullname, parent_override=None):
     if isinstance(loader, AcrossLoader):
         return loader
     get_source = getattr(loader, 'get_source', None)
@@ -147,7 +148,7 @@ def _interrogate_loader(loader, fullname):
     filename = get_filename(fullname)
     if filename is None:
         raise ValueError('Filename is not available for loader {!r} and module {}'.format(loader, fullname))
-    return AcrossLoader(source, package, _mangle_filename(filename))
+    return AcrossLoader(source, package, _mangle_filename(filename), parent_override=parent_override)
 
 
 # Make filename of a local module safe for remote use.
@@ -243,10 +244,14 @@ class AcrossFinder:
 
 
 class AcrossLoader:
-    def __init__(self, source, package, filename, code=None):
+    # When using 'python -m somemod', parent module of '__main__' is set to 'somemod'. This is an unusual situation
+    # that requires overriding the default logic for determining parent module. In such cases, 'parent_override'
+    # is the name of parent module to set.
+    def __init__(self, source, package, filename, parent_override=None, code=None):
         self.__source = source
         self.__package = package
         self.__filename = filename
+        self.__parent_override = parent_override
         self.__code = code
 
     def get_filename(self, fullname):
@@ -274,6 +279,8 @@ class AcrossLoader:
         return None
 
     def exec_module(self, module):
+        if self.__parent_override is not None:
+            module.__package__ = self.__parent_override
         exec(self.get_code(module.__name__), module.__dict__)
 
     def get_resource_reader(self, fullname):
@@ -286,7 +293,8 @@ class AcrossLoader:
 
     # For internal use only
     def deconstruct(self, with_code):
-        return self.__source, self.__package, self.__filename, (self.__code if with_code else None)
+        return (self.__source, self.__package, self.__filename, self.__parent_override,
+                (self.__code if with_code else None))
 
 
 def _contents(fullname):
