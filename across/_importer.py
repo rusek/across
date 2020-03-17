@@ -12,6 +12,12 @@ import functools
 import logging
 import socket
 import time
+import io
+
+try:
+    import importlib.resources
+except ImportError:
+    pass
 
 
 # Basic logging utilities. Since importer needs to be self-contained, they must be implemented here.
@@ -206,6 +212,11 @@ class AcrossFinder:
             raise ValueError('Cannot import modules over multiple connections')
         self.__conn = conn
 
+    def get_connection(self):
+        if self.__conn is None:
+            raise RuntimeError('Connection not initialized')
+        return self.__conn
+
     def find_spec(self, fullname, path=None, target=None):
         loader = self.find_module(fullname, path)
         if loader is None:
@@ -265,12 +276,39 @@ class AcrossLoader:
     def exec_module(self, module):
         exec(self.get_code(module.__name__), module.__dict__)
 
+    def get_resource_reader(self, fullname):
+        if not self.__package:
+            return None
+        return AcrossResourceReader(_finder.get_connection(), fullname)
+
     def __reduce__(self):
         return AcrossLoader, self.deconstruct(with_code=False)
 
     # For internal use only
     def deconstruct(self, with_code):
         return self.__source, self.__package, self.__filename, (self.__code if with_code else None)
+
+
+def _contents(fullname):
+    return list(importlib.resources.contents(fullname))
+
+
+class AcrossResourceReader:
+    def __init__(self, conn, fullname):
+        self.__conn = conn
+        self.__fullname = fullname
+
+    def open_resource(self, resource):
+        return io.BytesIO(self.__conn.call(importlib.resources.read_binary, self.__fullname, resource))
+
+    def resource_path(self, resource):
+        raise FileNotFoundError
+
+    def is_resource(self, name):
+        return self.__conn.call(importlib.resources.is_resource, self.__fullname, name)
+
+    def contents(self):
+        return self.__conn.call(_contents, self.__fullname)
 
 
 # This list contains 'across' module with all its dependencies, excluding importer module

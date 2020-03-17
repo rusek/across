@@ -6,6 +6,14 @@ import importlib.util
 import importlib.machinery
 import os.path
 import subprocess
+import io
+
+try:
+    import importlib.resources
+    has_resource_reader = True
+except ImportError:
+    has_resource_reader = False
+
 
 from across import Connection, Options, get_bios, set_debug_level
 from across._channels import ProcessChannel
@@ -72,7 +80,7 @@ def make_fake_module_name():
     return modname
 
 
-def make_fake_module(source, filename=None, is_package=False, name=None):
+def make_fake_module(source=None, filename=None, is_package=False, name=None, resources=None):
     class Loader:
         def get_source(self, fullname):
             return source
@@ -83,10 +91,32 @@ def make_fake_module(source, filename=None, is_package=False, name=None):
         def get_filename(self, fullname):
             return filename
 
+        def get_resource_reader(self, fullname):
+            return self
+
+        def open_resource(self, resource):
+            data = resources.get(resource)
+            if data is None:
+                raise FileNotFoundError
+            return io.BytesIO(data)
+
+        def resource_path(self, resource):
+            raise FileNotFoundError
+
+        def is_resource(self, name):
+            return name in resources
+
+        def contents(self):
+            return iter(resources.keys())
+
+    if source is None:
+        source = ''
     if name is None:
         name = make_fake_module_name()
     if filename is None:
         filename = '<string>'
+    if resources is None:
+        resources = {}
     module = sys.modules[name] = types.ModuleType(name)
     module.__spec__ = importlib.machinery.ModuleSpec(name, Loader(), origin=filename, is_package=is_package)
     module.__file__ = filename
@@ -394,3 +424,46 @@ def _set_debug_level_and_boot_connection():
     with boot_connection() as conn:
         if conn.call(get_debug_level) != 10:
             raise AssertionError
+
+
+def _read_by_path(module_name, resource):
+    with importlib.resources.path(module_name, resource) as path:
+        with open(path, 'rb') as fh:
+            return fh.read()
+
+
+@unittest.skipUnless(has_resource_reader, 'Resource reader API is not available')
+class ResourceReaderTest(unittest.TestCase):
+    def test_reading_resources_on_native_loader(self):
+        resource = 'data1.txt'
+        data = importlib.resources.read_binary(__package__, resource)
+        with boot_connection() as conn:
+            self.assertEqual(conn.call(importlib.resources.read_binary, __package__, resource), data)
+            self.assertRaises(FileNotFoundError, conn.call, importlib.resources.read_binary, __package__,
+                resource + '.or.not')
+            self.assertEqual(conn.call(importlib.resources.read_text, __package__, resource), data.decode('utf-8'))
+            self.assertEqual(conn.call(importlib.resources.is_resource, __package__, resource), True)
+            self.assertEqual(conn.call(importlib.resources.is_resource, __package__, resource + '.or.not'), False)
+            self.assertIn(resource, list(conn.call_ref(importlib.resources.contents, __package__)))
+            self.assertEqual(conn.call(_read_by_path, __package__, resource), data)
+
+    def test_reading_resources_on_custom_loader(self):
+        data = b'somedata'
+        resource = 'someresource'
+        module = make_fake_module(is_package=True, resources={resource: data})
+        with boot_connection(module.__name__) as conn:
+            self.assertEqual(conn.call(importlib.resources.read_binary, module.__name__, resource), data)
+            self.assertRaises(FileNotFoundError, conn.call, importlib.resources.read_binary, module.__name__,
+                resource + '.or.not')
+            self.assertEqual(conn.call(importlib.resources.read_text, module.__name__, resource), data.decode('utf-8'))
+            self.assertEqual(conn.call(importlib.resources.is_resource, module.__name__, resource), True)
+            self.assertEqual(conn.call(importlib.resources.is_resource, module.__name__, resource + '.or.not'), False)
+            self.assertEqual(list(conn.call_ref(importlib.resources.contents, module.__name__)), [resource])
+
+    def test_get_resource_reader_on_non_package(self):
+        module = make_fake_module()
+        with boot_connection(module.__name__) as conn:
+            self.assertTrue(conn.execute("""
+import importlib.util as u
+u.find_spec(m).loader.get_resource_reader(m) is None
+            """, m=module.__name__))
