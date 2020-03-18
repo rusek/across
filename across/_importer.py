@@ -13,6 +13,10 @@ import logging
 import socket
 import time
 import io
+import os
+import contextlib
+import pathlib
+import tempfile
 
 try:
     import importlib.resources
@@ -415,6 +419,59 @@ def _bootstrap(data):
     func, args = pickle.loads(data['func_with_args'])
     func_with_args = functools.partial(func, *args)
 
+    # Apply some additional workarounds.
+    _patch_resources_path()
+
     logger.debug('Bootloader ends')
 
     return func_with_args
+
+
+def _patch_resources_path():
+    if (3, 7) <= sys.version_info < (3, 9):
+        functools.update_wrapper(_path, importlib.resources.path)
+        importlib.resources.path = _path
+
+
+# Fixed implementation of importlib.resources.path. See https://bugs.python.org/issue39980
+@contextlib.contextmanager
+def _path(package, resource):
+    if os.path.split(resource)[0]:
+        raise ValueError('{!r} must be only a file name'.format(resource))
+    if isinstance(package, str):
+        package = importlib.import_module(package)
+    spec = package.__spec__
+    if spec.submodule_search_locations is None:
+        raise TypeError('{!r} is not a package'.format(spec.name))
+    get_resource_reader = getattr(spec.loader, 'get_resource_reader', None)
+    if get_resource_reader is not None:
+        resource_reader = get_resource_reader(spec.name)
+    else:
+        resource_reader = None
+    if resource_reader is not None:
+        try:
+            path = resource_reader.resource_path(resource)
+        except FileNotFoundError:
+            pass
+        else:
+            yield pathlib.Path(path)
+            return
+    else:
+        if spec.origin is None or not spec.has_location:
+            raise FileNotFoundError('Package has no location {!r}'.format(package))
+        path = pathlib.Path(spec.origin).parent / resource
+
+        if path.exists():
+            yield path
+            return
+    fd, path = tempfile.mkstemp()
+    try:
+        with open(fd, 'wb') as fh:
+            with importlib.resources.open_binary(package, resource) as fh2:
+                fh.write(fh2.read())
+        yield pathlib.Path(path)
+    finally:
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass

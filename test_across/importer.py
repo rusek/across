@@ -7,6 +7,7 @@ import importlib.machinery
 import os.path
 import subprocess
 import io
+import pathlib
 
 try:
     import importlib.resources
@@ -91,8 +92,9 @@ def make_fake_module(source=None, filename=None, is_package=False, name=None, re
         def get_filename(self, fullname):
             return filename
 
-        def get_resource_reader(self, fullname):
-            return self
+        if resources is not None:
+            def get_resource_reader(self, fullname):
+                return self
 
         def open_resource(self, resource):
             data = resources.get(resource)
@@ -115,8 +117,6 @@ def make_fake_module(source=None, filename=None, is_package=False, name=None, re
         name = make_fake_module_name()
     if filename is None:
         filename = '<string>'
-    if resources is None:
-        resources = {}
     module = sys.modules[name] = types.ModuleType(name)
     module.__spec__ = importlib.machinery.ModuleSpec(name, Loader(), origin=filename, is_package=is_package)
     module.__file__ = filename
@@ -450,8 +450,10 @@ def _read_by_path(module_name, resource):
 
 @unittest.skipUnless(has_resource_reader, 'Resource reader API is not available')
 class ResourceReaderTest(unittest.TestCase):
+    DATA1_FILE = 'data1.txt'
+
     def test_reading_resources_on_native_loader(self):
-        resource = 'data1.txt'
+        resource = self.DATA1_FILE
         data = importlib.resources.read_binary(__package__, resource)
         with boot_connection() as conn:
             self.assertEqual(conn.call(importlib.resources.read_binary, __package__, resource), data)
@@ -483,3 +485,59 @@ class ResourceReaderTest(unittest.TestCase):
 import importlib.util as u
 u.find_spec(m).loader.get_resource_reader(m) is None
             """, m=module.__name__))
+
+    def test_path_does_not_use_local_file(self):
+        resource = self.DATA1_FILE
+        data = b'expected data'
+        module = make_fake_module(
+            is_package=True,
+            filename=sys.modules[__package__].__file__,
+            resources={resource: data}
+        )
+        with boot_connection(module.__name__) as conn:
+            actual_data = conn.execute("""
+import importlib.resources as r
+with r.path(module_name, resource) as path:
+    with open(path, 'rb') as fh:
+        data = fh.read()
+data
+            """, module_name=module.__name__, resource=resource)
+            self.assertEqual(actual_data, data)
+
+    # Tests for across._importer._path replacement function.
+    def test_path_implementation(self):
+        self._test_path_implementation()
+        with boot_connection() as conn:
+            conn.call(self._test_path_implementation)
+
+    @staticmethod
+    def _test_path_implementation():
+        def check_exc(package, resource, exc_type):
+            try:
+                with importlib.resources.path(package, resource):
+                    pass
+            except exc_type:
+                pass
+            else:
+                raise AssertionError('Exception not raised')
+
+        check_exc('importlib.resources', 'resources.py', TypeError)
+        check_exc('importlib', 'some/file.py', ValueError)
+
+        def check_ok(package, resource):
+            with importlib.resources.path(package, resource) as path:
+                if not isinstance(path, pathlib.Path):
+                    raise AssertionError('Not a Path object: {!r}'.format(path))
+
+        check_ok('importlib', 'resources.py')
+        check_ok(importlib.import_module('importlib'), 'resources.py')
+
+        module = make_fake_module(filename=importlib.__file__, is_package=True)
+        module.__spec__.has_location = False
+        check_exc(module.__name__, 'resources.py', FileNotFoundError)
+        module.__spec__.has_location = True
+        check_ok(module.__name__, 'resources.py')
+
+        module = make_fake_module(is_package=True, resources={'file': b'data'})
+        with importlib.resources.path(module.__name__, 'file') as path:
+            os.unlink(path)
