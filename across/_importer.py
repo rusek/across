@@ -279,7 +279,10 @@ class AcrossLoader:
         return None
 
     def exec_module(self, module):
-        if self.__parent_override is not None:
+        if self.__parent_override:
+            # Workaround for https://bugs.python.org/issue30876
+            if sys.version_info <= (3, 5):
+                __import__(self.__parent_override)
             module.__package__ = self.__parent_override
         exec(self.get_code(module.__name__), module.__dict__)
 
