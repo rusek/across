@@ -6,7 +6,7 @@ twine==1.13.0
 wheel==0.33.4
 # Dependencies:
 alabaster==0.7.12
-Babel==2.7.0
+Babel==2.9.1
 bleach==3.3.0
 certifi==2019.6.16
 chardet==3.0.4
