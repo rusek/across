@@ -3,7 +3,7 @@
 Sphinx==2.1.2
 sphinx-rtd-theme==0.4.3
 twine==1.13.0
-wheel==0.33.4
+wheel==0.38.1
 # Dependencies:
 alabaster==0.7.12
 Babel==2.7.0
